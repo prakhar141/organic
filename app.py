@@ -13,13 +13,17 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
-
 # ================== CONFIG ==================
+import os
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
 MODEL_NAME = os.getenv("MODEL_NAME") or "deepseek/deepseek-r1-0528:free"
 EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
 K_VAL = int(os.getenv("K_VAL") or 4)
-PDF_FOLDER = "./pdfs"  # Folder containing PDF documents
+
+# Path to the folder where PDFs are located (repo root in this case)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PDF_FOLDER = BASE_DIR  # since notes.pdf is in repo root
 
 # ================== STREAMLIT PAGE SETUP ==================
 st.set_page_config(page_title="Carbon Buddy", layout="wide")
@@ -31,7 +35,7 @@ st.markdown("Your Friendly neighbourhood bot")
 def load_vector_db(folder: str):
     docs = []
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=50)
-    
+
     for file in os.listdir(folder):
         if file.lower().endswith(".pdf"):
             try:
@@ -43,7 +47,7 @@ def load_vector_db(folder: str):
                 st.warning(f"Could not read {file}: {e}")
 
     if not docs:
-        st.warning("No documents found — retrieval will return nothing.")
+        st.warning("No PDF documents found — retrieval will return nothing.")
         class EmptyRetriever:
             def get_relevant_documents(self, q): return []
         return EmptyRetriever()
@@ -51,9 +55,6 @@ def load_vector_db(folder: str):
     embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
     vectordb = FAISS.from_documents(docs, embedder)
     return vectordb.as_retriever(search_type="similarity", k=K_VAL)
-
-retriever = load_vector_db(PDF_FOLDER)
-
 # ================== OPENROUTER HELPER ==================
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
