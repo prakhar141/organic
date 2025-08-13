@@ -95,13 +95,31 @@ if "chat_history" not in st.session_state:
 
 language = st.selectbox("🌐 Response Language", ["English", "Hindi", "Telugu", "Tamil", "Marathi", "Bengali"])
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "last_answer_animated" not in st.session_state:
+    st.session_state.last_answer_animated = False
+
 if user_query := st.chat_input("Ask me about Organic Chemistry"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
+
     with st.spinner("Thinking..."):
         answer = vanilla_rag_answer(user_query, lang=language)
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    
+    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    st.session_state.last_answer_animated = True
+    st.rerun()  # Force rerun so UI refreshes cleanly
 
-# Display chat history once
-for chat in st.session_state.chat_history:
+# Show chat history
+for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
-        st.markdown(chat["content"])
+        # Animate only the last assistant message, once
+        if (
+            i == len(st.session_state.chat_history) - 1
+            and chat["role"] == "assistant"
+            and st.session_state.last_answer_animated
+        ):
+            type_like_chatgpt(chat["content"])
+            st.session_state.last_answer_animated = False
+        else:
+            st.markdown(chat["content"])
