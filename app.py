@@ -1,29 +1,23 @@
-# bits_buddy_vanilla_rag.py
 import os
-import time
-import hashlib
 import json
-import sqlite3
 import fitz
 import requests
 import streamlit as st
-from typing import List, Dict, Any, Optional
-
+from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
-# ================== CONFIG ==================
-import os
 
+# ================== CONFIG ==================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
 MODEL_NAME = os.getenv("MODEL_NAME") or "deepseek/deepseek-r1-0528:free"
 EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
 K_VAL = int(os.getenv("K_VAL") or 4)
 
-# Path to the folder where PDFs are located (repo root in this case)
+# Path to repo root (where notes.pdf is located)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PDF_FOLDER = BASE_DIR  # since notes.pdf is in repo root
+PDF_FOLDER = BASE_DIR
 
 # ================== STREAMLIT PAGE SETUP ==================
 st.set_page_config(page_title="Carbon Buddy", layout="wide")
@@ -55,6 +49,10 @@ def load_vector_db(folder: str):
     embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
     vectordb = FAISS.from_documents(docs, embedder)
     return vectordb.as_retriever(search_type="similarity", k=K_VAL)
+
+# Create retriever at startup
+retriever = load_vector_db(PDF_FOLDER)
+
 # ================== OPENROUTER HELPER ==================
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
