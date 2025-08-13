@@ -97,15 +97,11 @@ language = st.selectbox("🌐 Response Language", ["English", "Hindi", "Telugu",
 
 if user_query := st.chat_input("Ask me about Organic Chemistry"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
-
     with st.spinner("Thinking..."):
         answer = vanilla_rag_answer(user_query, lang=language)
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
-    # Animate the typing
-    type_like_chatgpt(answer)
-
-# Show previous chat instantly (no animation)
-for chat in st.session_state.chat_history[:-1]:
+# Display chat history once
+for chat in st.session_state.chat_history:
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         st.markdown(chat["content"])
