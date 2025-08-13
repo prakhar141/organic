@@ -22,9 +22,9 @@ K_VAL = int(os.getenv("K_VAL") or 4)
 PDF_FOLDER = "./pdfs"  # Folder containing PDF documents
 
 # ================== STREAMLIT PAGE SETUP ==================
-st.set_page_config(page_title="BITS Buddy - Vanilla RAG", layout="wide")
-st.title("🎓 BITS Buddy (Vanilla RAG)")
-st.markdown("Ask me anything about BITS Pilani — powered by a simple Retrieval-Augmented Generation pipeline.")
+st.set_page_config(page_title="Carbon Buddy", layout="wide")
+st.title("🎓 Carbon Buddy")
+st.markdown("Your Friendly neighbourhood bot")
 
 # ================== VECTOR DB LOADING ==================
 @st.cache_resource
@@ -85,7 +85,7 @@ if "chat_history" not in st.session_state:
 
 language = st.selectbox("🌐 Response Language", ["English", "Hindi", "Telugu", "Tamil", "Marathi", "Bengali"])
 
-if user_query := st.chat_input("Ask me about BITS Pilani"):
+if user_query := st.chat_input("Ask me about Organic Chemistry"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
     
     with st.chat_message("user"):
