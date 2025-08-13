@@ -86,17 +86,11 @@ language = st.selectbox("🌐 Response Language", ["English", "Hindi", "Telugu",
 
 if user_query := st.chat_input("Ask me about Organic Chemistry"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
-    
-    with st.chat_message("user"):
-        st.markdown(user_query)
-    
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            answer = vanilla_rag_answer(user_query, lang=language)
-            st.markdown(answer)
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    with st.spinner("Thinking..."):
+        answer = vanilla_rag_answer(user_query, lang=language)
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
-# ================== DISPLAY CHAT HISTORY ==================
+# Display chat history once
 for chat in st.session_state.chat_history:
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         st.markdown(chat["content"])
