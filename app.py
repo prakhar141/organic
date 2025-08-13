@@ -23,6 +23,17 @@ PDF_FOLDER = BASE_DIR
 st.set_page_config(page_title="Carbon Buddy", layout="wide")
 st.title("🎓 Carbon Buddy")
 st.markdown("Your Friendly neighbourhood bot")
+import time
+
+def type_like_chatgpt(text, speed=0.004):
+    """Types out the text character-by-character with a blinking cursor effect."""
+    placeholder = st.empty()
+    animated = ""
+    for c in text:
+        animated += c
+        placeholder.markdown(animated + "|")  # add cursor
+        time.sleep(speed)
+    placeholder.markdown(animated)  # final text without cursor
 
 # ================== VECTOR DB LOADING ==================
 @st.cache_resource
@@ -86,11 +97,15 @@ language = st.selectbox("🌐 Response Language", ["English", "Hindi", "Telugu",
 
 if user_query := st.chat_input("Ask me about Organic Chemistry"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
+
     with st.spinner("Thinking..."):
         answer = vanilla_rag_answer(user_query, lang=language)
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
-# Display chat history once
-for chat in st.session_state.chat_history:
+    # Animate the typing
+    type_like_chatgpt(answer)
+
+# Show previous chat instantly (no animation)
+for chat in st.session_state.chat_history[:-1]:
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         st.markdown(chat["content"])
