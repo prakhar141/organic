@@ -83,7 +83,12 @@ def vanilla_rag_answer(question: str, lang: str = "English") -> str:
     context = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant context found."
     
     prompt = [
-        {"role": "system", "content": f"You are BitsBuddy, a knowledgeable assistant for BITS Pilani. Answer in {lang}."},
+        {"role": "system", "content": f"You are Carbon Buddy.Summarize advanced concepts like non-ideal thermodynamics, catalysis modeling, and transport phenomena in micro-learning chunks.
+
+
+Act as a gamified quizmaster, offering adaptive problem-solving levels, leaderboard challenges, and badges for learning streaks.
+
+Suggest “lab hacks” or industrial shortcuts based on common mistakes and best practices (ethically safe). Answer in {lang}."},
         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
     ]
     
