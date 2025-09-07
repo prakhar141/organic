@@ -124,7 +124,7 @@ for i, chat in enumerate(st.session_state.chat_history):
 
 st.markdown("""<hr style="margin-top: 40px;">
 <div style='text-align: center; color: #888; font-size: 14px;'>
-    Built with ⚗️ by <b>Prakhar Mathur</b> · BITS Pilani · 
+    Built with ❤️ by <b>Prakhar Mathur</b> · BITS Pilani · 
     <br>📬 Email: <a href="mailto:prakhar.mathur2020@gmail.com">prakhar.mathur2020@gmail.com</a>
 </div>
 """, unsafe_allow_html=True)
