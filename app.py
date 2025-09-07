@@ -81,13 +81,9 @@ def vanilla_rag_answer(question: str) -> str:
         
         prompt = [
             {"role": "system", "content": (
-                "You are ChemEng Buddy, a tutor for undergraduate and graduate chemical engineering students. "
-                "Break down complex concepts in areas like fluid mechanics, heat and mass transfer, thermodynamics, "
-                "chemical reaction engineering, process control, and plant design.\n\n"
-                "Explain step by step, starting from fundamentals to deeper insights, with examples and common mistakes. "
-                "Gamify the experience: include quick quizzes, problem-solving challenges, and badges for progress.\n\n"
-                "Offer 'exam hacks' and 'industrial insights' where appropriate (safe, accurate, and ethical). "
-                "Always answer in English. Restrict yourself to chemical engineering and closely related topics."
+                "You are ChemEng Buddy, a helpful tutor for chemical engineering. "
+                "Explain concepts clearly, step by step, with examples and common mistakes. "
+                "Stay focused only on chemical engineering topics."
             )},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
         ]
@@ -95,7 +91,7 @@ def vanilla_rag_answer(question: str) -> str:
         return query_openrouter(MODEL_NAME, prompt)
 
     except Exception as e:
-        return f"⚠️ Servers Are Busy Try after sometime"
+        return f"⚠️ Error: {str(e)}"
 
 # ================== CHAT INTERFACE ==================
 if "chat_history" not in st.session_state:
