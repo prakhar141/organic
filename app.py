@@ -9,22 +9,22 @@ import time
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
-MODEL_NAME = os.getenv("MODEL_NAME") or "deepseek/deepseek-r1-0528:free"
+MODEL_NAME = os.getenv("MODEL_NAME") or "openai/gpt-oss-120b:free"
 EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
 K_VAL = int(os.getenv("K_VAL") or 4)
 
-# Hugging Face URLs for the prebuilt vector store
-FAISS_INDEX_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.faiss"
-FAISS_PKL_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.pkl"
+# Hugging Face URLs for the prebuilt vector store (swap with Chem Eng dataset)
+FAISS_INDEX_URL = "https://huggingface.co/datasets/prakhar146/chemeng/resolve/main/index.faiss"
+FAISS_PKL_URL = "https://huggingface.co/datasets/prakhar146/chemeng/resolve/main/index.pkl"
 
 # Local directory to store downloaded files
 LOCAL_FAISS_DIR = "./faiss_store"
 os.makedirs(LOCAL_FAISS_DIR, exist_ok=True)
 
 # ================== STREAMLIT PAGE SETUP ==================
-st.set_page_config(page_title="DermaConsult", layout="wide")
-st.title("🎓 DermaConsult")
-st.markdown("Your Friendly neighbourhood bot")
+st.set_page_config(page_title="ChemEng Buddy", layout="wide")
+st.title("⚗️ ChemEng Buddy")
+st.markdown("Your friendly Chemical Engineering study partner")
 
 def type_like_chatgpt(text, speed=0.004):
     placeholder = st.empty()
@@ -54,7 +54,7 @@ def load_vector_db():
     vectordb = FAISS.load_local(
         LOCAL_FAISS_DIR,
         embedder,
-        allow_dangerous_deserialization=True  # ⚠️ required for your trusted .pkl file
+        allow_dangerous_deserialization=True  # ⚠️ only for trusted .pkl file
     )
     return vectordb.as_retriever(search_type="similarity", k=K_VAL)
 
@@ -81,13 +81,13 @@ def vanilla_rag_answer(question: str) -> str:
         
         prompt = [
             {"role": "system", "content": (
-                "You are Derma Buddy. Summarize advanced dermatology concepts like "
-                "inflammatory skin diseases, nail and hair disorders, dermatopathology, "
-                "and dermatologic therapeutics in micro-learning chunks.\n\n"
-                "Act as a gamified quizmaster, offering adaptive problem-solving levels, "
-                "leaderboard challenges, and badges for clinical learning streaks.\n\n"
-                "Suggest 'clinic hacks' or exam shortcuts based on common mistakes and "
-                "best practices (ethically safe, medically accurate). Answer in English.Answer questions related to dermatology only"
+                "You are ChemEng Buddy, a tutor for undergraduate and graduate chemical engineering students. "
+                "Break down complex concepts in areas like fluid mechanics, heat and mass transfer, thermodynamics, "
+                "chemical reaction engineering, process control, and plant design.\n\n"
+                "Explain step by step, starting from fundamentals to deeper insights, with examples and common mistakes. "
+                "Gamify the experience: include quick quizzes, problem-solving challenges, and badges for progress.\n\n"
+                "Offer 'exam hacks' and 'industrial insights' where appropriate (safe, accurate, and ethical). "
+                "Always answer in English. Restrict yourself to chemical engineering and closely related topics."
             )},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
         ]
@@ -103,7 +103,7 @@ if "chat_history" not in st.session_state:
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
-if user_query := st.chat_input("Ask me about Dermatology"):
+if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
 
     with st.spinner("Thinking..."):
@@ -128,7 +128,7 @@ for i, chat in enumerate(st.session_state.chat_history):
 
 st.markdown("""<hr style="margin-top: 40px;">
 <div style='text-align: center; color: #888; font-size: 14px;'>
-    Built with ❤️ by <b>Prakhar Mathur</b> · BITS Pilani · 
+    Built with ⚗️ by <b>Prakhar Mathur</b> · BITS Pilani · 
     <br>📬 Email: <a href="mailto:prakhar.mathur2020@gmail.com">prakhar.mathur2020@gmail.com</a>
 </div>
 """, unsafe_allow_html=True)
