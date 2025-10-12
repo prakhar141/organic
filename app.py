@@ -1,68 +1,118 @@
+# app.py
 import os
+import time
 import json
+import hashlib
+import logging
+import random
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 import requests
 import streamlit as st
-import hashlib
-import time
-import sqlite3
-from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
-# ======================================
-# CONFIG
-# ======================================
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
-MODEL_MAIN = "deepseek/deepseek-chat-v3.1:free"
-MODEL_FALLBACKS = [
-    "google/gemma-2-9b-it:free",
-    "meta-llama/llama-3.1-8b-instruct:free",
-    "mistralai/mixtral-8x7b-instruct:free",
-]
-EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
-K_VAL = int(os.getenv("K_VAL") or 4)
+# ------------------ CONFIG ------------------
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "YOUR_API_KEY")
 
-# Hugging Face URLs for prebuilt ChemEng dataset (medical dataset as placeholder)
+# ✅ Only Free and Capable OpenRouter Models
+AVAILABLE_MODELS = [
+    "mistralai/mixtral-8x7b:free",
+    "google/gemma-2-9b-it:free",
+    "deepseek/deepseek-chat-v3.1:free"
+]
+MODEL_NAME = os.getenv("MODEL_NAME", AVAILABLE_MODELS[0])
+
+EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+K_VAL = int(os.getenv("K_VAL", "4"))
+
+# Retry / Circuit Breaker Settings
+MAX_API_ATTEMPTS = 6
+BASE_BACKOFF = 1.0
+MAX_BACKOFF = 30.0
+CB_FAILURE_THRESHOLD = 5
+CB_COOLDOWN_SECONDS = 60
+DEDUP_TTL_SECONDS = 20
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "Content-Type": "application/json",
+}
+
 FAISS_INDEX_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.faiss"
 FAISS_PKL_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.pkl"
 LOCAL_FAISS_DIR = "./faiss_store"
 os.makedirs(LOCAL_FAISS_DIR, exist_ok=True)
 
-# ======================================
-# STREAMLIT PAGE SETUP
-# ======================================
-st.set_page_config(page_title="⚗️ ChemEng Buddy", layout="wide")
-st.title("⚗️ ChemEng Buddy")
-st.markdown("Your friendly Chemical Engineering study partner")
+# ------------------ LOGGING ------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("chemeng_buddy")
 
-# ======================================
-# CHAT TYPING ANIMATION
-# ======================================
-def type_like_chatgpt(text, speed=0.004):
-    placeholder = st.empty()
-    animated = ""
-    for c in text:
-        animated += c
-        placeholder.markdown(animated + "|")
-        time.sleep(speed)
-    placeholder.markdown(animated)
+# ------------------ STREAMLIT SETUP ------------------
+st.set_page_config(page_title="ChemEng Buddy", layout="wide")
+st.markdown(
+    """
+    <style>
+    body {
+        background-color: #f8fafc;
+        color: #1a1a1a;
+        font-family: 'Inter', sans-serif;
+    }
+    .main-title {
+        font-size: 42px;
+        color: #004aad;
+        font-weight: 700;
+        text-align: center;
+        margin-bottom: 0px;
+    }
+    .subtitle {
+        text-align: center;
+        font-size: 18px;
+        color: #555;
+        margin-bottom: 40px;
+    }
+    .footer {
+        text-align: center;
+        color: #888;
+        font-size: 14px;
+        margin-top: 50px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-# ======================================
-# FILE DOWNLOADER (Cached)
-# ======================================
-def download_file(url: str, local_path: str):
-    if not os.path.exists(local_path):
-        r = requests.get(url)
-        r.raise_for_status()
+st.markdown("<h1 class='main-title'>⚗️ ChemEng Buddy</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p class='subtitle'>Your intelligent Chemical Engineering assistant — powered by free open models.</p>",
+    unsafe_allow_html=True,
+)
+
+# ------------------ UTILITIES ------------------
+def download_file(url: str, local_path: str, timeout: int = 60):
+    """Download FAISS index files if not already present"""
+    if os.path.exists(local_path):
+        return
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
         with open(local_path, "wb") as f:
-            f.write(r.content)
+            f.write(resp.content)
+        logger.info(f"Downloaded {url} -> {local_path}")
+    except Exception as e:
+        logger.error(f"Failed to download {url}: {e}")
+        st.error(f"Failed to download required resource: {e}")
 
+def hash_prompt(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+# ------------------ DOWNLOAD FAISS ------------------
 download_file(FAISS_INDEX_URL, os.path.join(LOCAL_FAISS_DIR, "index.faiss"))
 download_file(FAISS_PKL_URL, os.path.join(LOCAL_FAISS_DIR, "index.pkl"))
 
-# ======================================
-# VECTORSTORE LOADER
-# ======================================
+# ------------------ VECTOR DB ------------------
 @st.cache_resource
 def load_vector_db():
     embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
@@ -75,188 +125,169 @@ def load_vector_db():
 
 retriever = load_vector_db()
 
-# ======================================
-# OPENROUTER SETUP
-# ======================================
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+# ------------------ CIRCUIT BREAKER + DEDUP ------------------
+@dataclass
+class CircuitBreaker:
+    failure_count: int = 0
+    opened_at: Optional[datetime] = None
+    cooldown_seconds: int = CB_COOLDOWN_SECONDS
+    threshold: int = CB_FAILURE_THRESHOLD
 
-# ======================================
-# IN-MEMORY + SQLITE CACHE
-# ======================================
-if "prompt_cache" not in st.session_state:
-    st.session_state.prompt_cache = {}
+    def record_failure(self):
+        self.failure_count += 1
+        if self.failure_count >= self.threshold and not self.is_open():
+            self.opened_at = datetime.utcnow()
+            logger.warning(f"Circuit opened due to failures at {self.opened_at}")
 
-ENABLE_SQL_CACHE = True
-SQLITE_PATH = "chemeng_cache.sqlite"
+    def record_success(self):
+        self.failure_count = 0
+        self.opened_at = None
 
-def init_sqlite():
-    conn = sqlite3.connect(SQLITE_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS cache (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    conn.commit()
-    return conn
+    def is_open(self) -> bool:
+        if self.opened_at is None:
+            return False
+        if datetime.utcnow() - self.opened_at > timedelta(seconds=self.cooldown_seconds):
+            self.failure_count = 0
+            self.opened_at = None
+            return False
+        return True
 
-_sql_conn = init_sqlite() if ENABLE_SQL_CACHE else None
+@dataclass
+class DedupCache:
+    store: Dict[str, Tuple[float, str]] = field(default_factory=dict)
+    ttl_seconds: int = DEDUP_TTL_SECONDS
 
-def cache_key(model, messages):
-    raw = model + json.dumps(messages, sort_keys=True)
-    return hashlib.sha256(raw.encode()).hexdigest()
+    def get(self, key: str) -> Optional[str]:
+        entry = self.store.get(key)
+        if not entry:
+            return None
+        ts, resp = entry
+        if time.time() - ts > self.ttl_seconds:
+            self.store.pop(key, None)
+            return None
+        return resp
 
-def mem_get(key):
-    return st.session_state.prompt_cache.get(key)
+    def set(self, key: str, response: str):
+        self.store[key] = (time.time(), response)
 
-def mem_set(key, value):
-    st.session_state.prompt_cache[key] = value
-    if len(st.session_state.prompt_cache) > 2000:
-        st.session_state.prompt_cache.pop(next(iter(st.session_state.prompt_cache)))
+if "circuit" not in st.session_state:
+    st.session_state.circuit = CircuitBreaker()
+if "dedup" not in st.session_state:
+    st.session_state.dedup = DedupCache()
 
-def sql_get(key):
-    if not _sql_conn:
-        return None
-    cur = _sql_conn.cursor()
-    cur.execute("SELECT value FROM cache WHERE key=?", (key,))
-    row = cur.fetchone()
-    return row[0] if row else None
+circuit: CircuitBreaker = st.session_state.circuit
+dedup: DedupCache = st.session_state.dedup
 
-def sql_set(key, value):
-    if not _sql_conn:
-        return
-    cur = _sql_conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO cache (key,value) VALUES (?,?)", (key, value))
-    _sql_conn.commit()
+# ------------------ OPENROUTER CLIENT ------------------
+def exponential_backoff_with_jitter(attempt: int) -> float:
+    cap = min(MAX_BACKOFF, BASE_BACKOFF * (2 ** attempt))
+    return random.uniform(0, cap)
 
-# ======================================
-# QUERY OPENROUTER WITH BACKOFF & FALLBACKS
-# ======================================
-def query_openrouter_with_backoff(model: str, messages: List[Dict[str, str]], max_retries=4) -> str:
-    key = cache_key(model, messages)
+def call_openrouter_with_retries(model: str, messages: List[Dict[str, str]]) -> Tuple[bool, str]:
+    if circuit.is_open():
+        return False, "OpenRouter temporarily unavailable — using local fallback."
 
-    # 1️⃣ Check memory cache
-    cached = mem_get(key)
+    payload = {"model": model, "messages": messages}
+    prompt_hash = hash_prompt(json.dumps(payload, sort_keys=True))
+    cached = dedup.get(prompt_hash)
     if cached:
-        return cached
+        return True, cached
 
-    # 2️⃣ Check SQLite cache
-    cached_sql = sql_get(key)
-    if cached_sql:
-        mem_set(key, cached_sql)
-        return cached_sql
-
-    backoff = 2.0
-    for attempt in range(max_retries):
+    for attempt in range(1, MAX_API_ATTEMPTS + 1):
         try:
-            payload = {"model": model, "messages": messages}
             resp = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=30)
-            
-            if resp.status_code == 429:
-                # explicit 429 detection
-                retry_after = int(resp.headers.get("Retry-After", backoff))
-                time.sleep(retry_after)
-                backoff *= 2
+            if resp.status_code == 200:
+                data = resp.json()
+                if "choices" in data and data["choices"]:
+                    content = data["choices"][0]["message"]["content"]
+                    dedup.set(prompt_hash, content)
+                    circuit.record_success()
+                    return True, content
+            elif resp.status_code in (429, 500, 503):
+                time.sleep(exponential_backoff_with_jitter(attempt))
                 continue
-            
-            resp.raise_for_status()
-            data = resp.json()
-            if "choices" in data and data["choices"]:
-                answer = data["choices"][0]["message"]["content"]
-                mem_set(key, answer)
-                sql_set(key, answer)
-                return answer
-            return json.dumps(data)
-        except requests.HTTPError as e:
-            if "429" in str(e) and attempt < max_retries - 1:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            if attempt == max_retries - 1:
-                raise e
-        except Exception as e:
-            if attempt == max_retries - 1:
-                return f"⚠️ Error: {e}"
-            time.sleep(backoff)
-            backoff *= 2
-    return "⚠️ Request failed after retries."
+        except Exception:
+            circuit.record_failure()
+            time.sleep(exponential_backoff_with_jitter(attempt))
 
-# ======================================
-# MODEL FALLBACK CHAIN
-# ======================================
-def query_models_with_fallbacks(messages: List[Dict[str, str]]):
-    models_to_try = [MODEL_MAIN] + MODEL_FALLBACKS
-    for m in models_to_try:
-        try:
-            return query_openrouter_with_backoff(m, messages)
-        except Exception as e:
-            st.warning(f"{m} failed → {e}")
-            continue
-    return "⚠️ All models are busy. Please retry later."
+    circuit.record_failure()
+    return False, "⚠️ OpenRouter unreachable after retries."
 
-# ======================================
-# VANILLA RAG PIPELINE
-# ======================================
-def vanilla_rag_answer(question: str, deep_mode=False) -> str:
-    docs = retriever.get_relevant_documents(question)
-    context = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant context found."
+# ------------------ RAG PIPELINE ------------------
+SYSTEM_PROMPT = (
+    "You are ChemEng Buddy, an expert tutor in Chemical Engineering. "
+    "Provide clear, step-by-step reasoning, equations, and practical insights for students. "
+    "Focus only on Chemical Engineering concepts."
+)
 
-    base_system = (
-        "You are ChemEng Buddy, a helpful tutor for Chemical Engineering. "
-        "Explain concepts clearly, step by step, with examples and highlight common mistakes. "
-        "Stay focused only on chemical engineering topics."
-    )
-
-    # Adaptive DeepThink mode triggers only for complex questions
-    if deep_mode:
-        base_system += " Use deeper reasoning, derive equations symbolically, and cross-check assumptions."
-
-    messages = [
-        {"role": "system", "content": base_system},
+def build_prompt(question: str, context_docs: List[str]) -> List[Dict[str, str]]:
+    context = "\n\n".join(context_docs) if context_docs else "No relevant context found."
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
     ]
 
-    return query_models_with_fallbacks(messages)
+def local_rag_fallback(question: str) -> str:
+    docs = retriever.get_relevant_documents(question)
+    if not docs:
+        return "No relevant local context found. Please try again later."
+    summary = "Local context summary:\n\n"
+    for i, d in enumerate(docs[:K_VAL], 1):
+        summary += f"{i}. {d.page_content[:600].strip()}\n\n"
+    return summary + "\n⚠️ Using local fallback because external model was unavailable."
 
-# ======================================
-# CHAT UI
-# ======================================
+# ------------------ CHAT INTERFACE ------------------
+def type_like_chatgpt(text, speed=0.004):
+    placeholder = st.empty()
+    out = ""
+    for c in text:
+        out += c
+        placeholder.markdown(out + " |")
+        time.sleep(speed)
+    placeholder.markdown(out)
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
-if user_query := st.chat_input("Ask me about Chemical Engineering"):
-    st.session_state.chat_history.append({"role": "user", "content": user_query})
+if circuit.is_open():
+    st.warning("⚠️ External model temporarily paused due to repeated failures. Using local fallback.")
 
-    with st.spinner("Thinking..."):
-        deep_mode = len(user_query.split()) > 25  # Adaptive DeepThink
-        answer = vanilla_rag_answer(user_query, deep_mode=deep_mode)
-    
-    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+user_query = st.chat_input("Ask me about Chemical Engineering 🌡️")
+
+if user_query:
+    st.session_state.chat_history.append({"role": "user", "content": user_query})
+    docs = retriever.get_relevant_documents(user_query)
+    context_docs = [d.page_content for d in docs]
+    messages = build_prompt(user_query, context_docs)
+
+    with st.spinner("Thinking like a ChemEng expert..."):
+        success, response = call_openrouter_with_retries(MODEL_NAME, messages)
+        if not success:
+            response = local_rag_fallback(user_query)
+
+    st.session_state.chat_history.append({"role": "assistant", "content": response})
     st.session_state.last_answer_animated = True
     st.rerun()
 
-# ======================================
-# RENDER CHAT
-# ======================================
+# Display chat history
 for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
-        if (
-            i == len(st.session_state.chat_history) - 1
-            and chat["role"] == "assistant"
-            and st.session_state.last_answer_animated
-        ):
+        if i == len(st.session_state.chat_history) - 1 and chat["role"] == "assistant" and st.session_state.last_answer_animated:
             type_like_chatgpt(chat["content"])
             st.session_state.last_answer_animated = False
         else:
             st.markdown(chat["content"])
 
-st.markdown("""<hr style="margin-top: 40px;">
-<div style='text-align: center; color: #888; font-size: 14px;'>
-    Built with ❤️ by <b>Prakhar Mathur</b> · BITS Pilani · 
-    <br>📬 Email: <a href="mailto:prakhar.mathur2020@gmail.com">prakhar.mathur2020@gmail.com</a>
-</div>
-""", unsafe_allow_html=True)
+# ------------------ FOOTER ------------------
+st.markdown(
+    """
+    <hr class="solid">
+    <div class='footer'>
+        Built with ❤️ by <b>Prakhar Mathur</b> · BITS Pilani<br>
+        📬 <a href="mailto:prakhar.mathur2020@gmail.com">prakhar.mathur2020@gmail.com</a>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
