@@ -5,9 +5,10 @@ import json
 import hashlib
 import logging
 import random
+import sqlite3
 from typing import List, Dict, Tuple
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 import requests
 import streamlit as st
 
@@ -33,85 +34,118 @@ DEDUP_TTL_SECONDS = 20
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
-# ------------------ LOGGING ------------------
-logging.basicConfig(level=logging.INFO)
+# ------------------ STRUCTURED LOGGING ------------------
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "chemeng_buddy.log")
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+        }
+        if hasattr(record, "extra_data"):
+            log_record.update(record.extra_data)
+        return json.dumps(log_record)
+
 logger = logging.getLogger("chemeng_buddy")
+logger.setLevel(logging.INFO)
+file_handler = logging.FileHandler(LOG_FILE)
+file_handler.setFormatter(JSONFormatter())
+logger.addHandler(file_handler)
 
-# ------------------ STREAMLIT SETUP ------------------
-st.set_page_config(page_title="ChemEng Buddy", layout="wide")
-st.markdown("""
-<style>
-body {background-color: #f8fafc; color: #1a1a1a; font-family: 'Inter', sans-serif;}
-.main-title {font-size: 42px; color: #004aad; font-weight: 700; text-align: center; margin-bottom: 0px;}
-.subtitle {text-align: center; font-size: 18px; color: #555; margin-bottom: 40px;}
-.footer {text-align: center; color: #888; font-size: 14px; margin-top: 50px;}
-</style>
-""", unsafe_allow_html=True)
+# ------------------ DATABASE ------------------
+DB_PATH = "chemeng_buddy.db"
 
-st.markdown("<h1 class='main-title'>⚗️ ChemEng Buddy</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Your intelligent Chemical Engineering assistant.</p>", unsafe_allow_html=True)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS dedup_cache (
+            key TEXT PRIMARY KEY,
+            timestamp REAL,
+            response TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS circuit_breaker (
+            id INTEGER PRIMARY KEY,
+            failure_count INTEGER,
+            opened_at REAL
+        )
+    """)
+    c.execute("INSERT OR IGNORE INTO circuit_breaker (id, failure_count, opened_at) VALUES (1, 0, NULL)")
+    conn.commit()
+    conn.close()
 
-# ------------------ UTILITIES ------------------
-def hash_prompt(prompt: str) -> str:
-    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+init_db()
 
-# ------------------ CIRCUIT BREAKER + DEDUP ------------------
+def db_execute(query, params=(), fetch=False):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(query, params)
+    result = c.fetchall() if fetch else None
+    conn.commit()
+    conn.close()
+    return result
+
+# ------------------ CIRCUIT BREAKER ------------------
 @dataclass
 class CircuitBreaker:
-    failure_count: int = 0
-    opened_at: datetime = None
     cooldown_seconds: int = CB_COOLDOWN_SECONDS
     threshold: int = CB_FAILURE_THRESHOLD
 
     def record_failure(self):
-        self.failure_count += 1
-        if self.failure_count >= self.threshold and not self.is_open():
-            self.opened_at = datetime.utcnow()
-            logger.warning(f"Circuit opened due to failures at {self.opened_at}")
+        data = db_execute("SELECT failure_count, opened_at FROM circuit_breaker WHERE id=1", fetch=True)[0]
+        failure_count, opened_at = data
+        failure_count += 1
+        if failure_count >= self.threshold and opened_at is None:
+            opened_at = time.time()
+            logger.warning("Circuit opened", extra={"extra_data": {"failure_count": failure_count}})
+        db_execute("UPDATE circuit_breaker SET failure_count=?, opened_at=? WHERE id=1",
+                   (failure_count, opened_at))
 
     def record_success(self):
-        self.failure_count = 0
-        self.opened_at = None
+        db_execute("UPDATE circuit_breaker SET failure_count=0, opened_at=NULL WHERE id=1")
 
     def is_open(self) -> bool:
-        if self.opened_at is None:
+        data = db_execute("SELECT failure_count, opened_at FROM circuit_breaker WHERE id=1", fetch=True)[0]
+        failure_count, opened_at = data
+        if opened_at is None:
             return False
-        if datetime.utcnow() - self.opened_at > timedelta(seconds=self.cooldown_seconds):
-            self.failure_count = 0
-            self.opened_at = None
+        if time.time() - opened_at > self.cooldown_seconds:
+            self.record_success()
+            logger.info("Circuit closed", extra={"extra_data": {"event": "circuit_closed"}})
             return False
         return True
 
+# ------------------ DEDUP CACHE ------------------
 @dataclass
 class DedupCache:
-    store: Dict[str, Tuple[float, str]] = None
     ttl_seconds: int = DEDUP_TTL_SECONDS
 
-    def __post_init__(self):
-        self.store = {}
-
     def get(self, key: str) -> str:
-        entry = self.store.get(key)
-        if not entry:
+        result = db_execute("SELECT timestamp, response FROM dedup_cache WHERE key=?", (key,), fetch=True)
+        if not result:
             return None
-        ts, resp = entry
+        ts, resp = result[0]
         if time.time() - ts > self.ttl_seconds:
-            self.store.pop(key, None)
+            db_execute("DELETE FROM dedup_cache WHERE key=?", (key,))
             return None
         return resp
 
     def set(self, key: str, response: str):
-        self.store[key] = (time.time(), response)
+        db_execute("INSERT OR REPLACE INTO dedup_cache (key, timestamp, response) VALUES (?, ?, ?)",
+                   (key, time.time(), response))
 
-if "circuit" not in st.session_state:
-    st.session_state.circuit = CircuitBreaker()
-if "dedup" not in st.session_state:
-    st.session_state.dedup = DedupCache()
+circuit = CircuitBreaker()
+dedup = DedupCache()
 
-circuit: CircuitBreaker = st.session_state.circuit
-dedup: DedupCache = st.session_state.dedup
-
-# ------------------ OPENROUTER CLIENT ------------------
+# ------------------ OPENROUTER ------------------
 def exponential_backoff_with_jitter(attempt: int) -> float:
     cap = min(MAX_BACKOFF, BASE_BACKOFF * (2 ** attempt))
     return random.uniform(0, cap)
@@ -122,11 +156,32 @@ SYSTEM_PROMPT = (
     "Focus only on Chemical Engineering concepts."
 )
 
-def build_prompt(question: str) -> List[Dict[str, str]]:
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question}
-    ]
+def build_prompt(question: str, last_q: str = None) -> List[Dict[str, str]]:
+    """
+    Detects follow-up prompts and reuses only the last question (not the model's answer).
+    """
+    follow_up_keywords = ["elaborate", "explain", "why", "how", "example", "more", "simpler", "detail"]
+    lower_q = question.lower()
+
+    if any(k in lower_q for k in follow_up_keywords) and last_q:
+        context = (
+            f"The user previously asked: '{last_q}'. "
+            f"Now they ask a follow-up: '{question}'. "
+            f"Please elaborate based only on that last question."
+        )
+        logger.info("Follow-up detected", extra={"extra_data": {"last_question": last_q, "user_query": question}})
+        return [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": context}
+        ]
+    else:
+        return [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": question}
+        ]
+
+def hash_prompt(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 def call_openrouter_with_retries(model: str, messages: List[Dict[str, str]]) -> Tuple[bool, str]:
     if circuit.is_open():
@@ -136,50 +191,63 @@ def call_openrouter_with_retries(model: str, messages: List[Dict[str, str]]) -> 
     prompt_hash = hash_prompt(json.dumps(payload, sort_keys=True))
     cached = dedup.get(prompt_hash)
     if cached:
+        logger.info("Cache hit", extra={"extra_data": {"model": model}})
         return True, cached
 
     for attempt in range(1, MAX_API_ATTEMPTS + 1):
         try:
-            resp = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
+            start = time.time()
+            r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=30)
+            latency = round(time.time() - start, 2)
+
+            if r.status_code == 200:
+                data = r.json()
                 if "choices" in data and data["choices"]:
                     content = data["choices"][0]["message"]["content"]
                     dedup.set(prompt_hash, content)
                     circuit.record_success()
+                    logger.info("API success", extra={"extra_data": {"model": model, "latency": latency}})
                     return True, content
-            elif resp.status_code in (429, 500, 503):
+            elif r.status_code in (429, 500, 503):
+                logger.warning("Retrying", extra={"extra_data": {"status": r.status_code, "attempt": attempt}})
                 time.sleep(exponential_backoff_with_jitter(attempt))
         except Exception as e:
-            logger.error(f"OpenRouter request failed: {e}")
             circuit.record_failure()
+            logger.error("API exception", extra={"extra_data": {"error": str(e)}})
             time.sleep(exponential_backoff_with_jitter(attempt))
 
     circuit.record_failure()
+    logger.error("Max retries reached", extra={"extra_data": {"model": model}})
     return False, "⚠️ OpenRouter unreachable after retries."
 
-# ------------------ CHAT INTERFACE ------------------
-def type_like_chatgpt(text, speed=0.004):
-    placeholder = st.empty()
-    out = ""
-    for c in text:
-        out += c
-        placeholder.markdown(out + " |")
-        time.sleep(speed)
-    placeholder.markdown(out)
+# ------------------ STREAMLIT UI ------------------
+st.set_page_config(page_title="ChemEng Buddy", layout="wide")
+
+st.markdown("""
+<style>
+body {background-color: #f8fafc; color: #1a1a1a; font-family: 'Inter', sans-serif;}
+.main-title {font-size: 42px; color: #004aad; font-weight: 700; text-align: center; margin-bottom: 0px;}
+.subtitle {text-align: center; font-size: 18px; color: #555; margin-bottom: 40px;}
+.footer {text-align: center; color: #888; font-size: 14px; margin-top: 50px;}
+hr.solid {border-top: 1px solid #ccc;}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<h1 class='main-title'>⚗️ ChemEng Buddy</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Your intelligent Chemical Engineering assistant.</p>", unsafe_allow_html=True)
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-if "last_answer_animated" not in st.session_state:
-    st.session_state.last_answer_animated = False
 
-if circuit.is_open():
-    st.warning("⚠️ External model temporarily paused due to repeated failures.")
+user_query = st.chat_input("Ask me a question about Chemical Engineering 🌡️")
 
-user_query = st.chat_input("Ask me about Chemical Engineering 🌡️")
 if user_query:
+    last_q = None
+    if len(st.session_state.chat_history) >= 2:
+        last_q = st.session_state.chat_history[-2]["content"]
+
+    messages = build_prompt(user_query, last_q)
     st.session_state.chat_history.append({"role": "user", "content": user_query})
-    messages = build_prompt(user_query)
 
     with st.spinner("Thinking like a ChemEng expert..."):
         success, response = call_openrouter_with_retries(MODEL_NAME, messages)
@@ -187,16 +255,11 @@ if user_query:
             response = "⚠️ Unable to get response from OpenRouter."
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
-    st.session_state.last_answer_animated = True
 
-# Display chat history
-for i, chat in enumerate(st.session_state.chat_history):
+# Display chat
+for chat in st.session_state.chat_history:
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
-        if i == len(st.session_state.chat_history) - 1 and chat["role"] == "assistant" and st.session_state.last_answer_animated:
-            type_like_chatgpt(chat["content"])
-            st.session_state.last_answer_animated = False
-        else:
-            st.markdown(chat["content"])
+        st.markdown(chat["content"])
 
 # ------------------ FOOTER ------------------
 st.markdown("""
