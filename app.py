@@ -139,24 +139,41 @@ def query_openrouter_with_fallback(messages: List[Dict[str, str]]) -> str:
     return "⚠ All LLMs failed to respond."
 
 # ================== FOLLOW-UP LOGIC ==================
-def build_prompt_with_context(user_question: str):
-    # Include previous answer if follow-up detected
-    context_text = ""
-    if st.session_state.chat_history:
-        last_assistant = next(
-            (msg for msg in reversed(st.session_state.chat_history) if msg["role"] == "assistant"),
-            None
-        )
-        last_user = next(
-            (msg for msg in reversed(st.session_state.chat_history) if msg["role"] == "user"),
-            None
-        )
-        if last_assistant and last_user:
-            # Very simple heuristic: follow-up if question is short or contains pronouns
-            followup_indicators = ["it", "they", "this", "that", "these", "those", "how", "why", "what"]
-            if any(word in user_question.lower() for word in followup_indicators) or len(user_question.split()) < 6:
-                context_text = f"Refer to previous Q&A:\nUser: {last_user['content']}\nAssistant: {last_assistant['content']}\n\n"
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
+# ================== FOLLOW-UP LOGIC: LAST QUESTION ONLY ==================
+def is_followup_recent(user_question: str, threshold=0.7):
+    """
+    Checks if the user_question is a follow-up to the last user question in chat history.
+    Returns the context string if follow-up detected, else empty string.
+    """
+    if not st.session_state.chat_history or len(st.session_state.chat_history) < 2:
+        return ""
+    
+    # Find the last user question and its assistant answer
+    last_user_idx = max(i for i, msg in enumerate(st.session_state.chat_history) if msg["role"] == "user")
+    last_user_q = st.session_state.chat_history[last_user_idx]["content"]
+    last_assistant_a = st.session_state.chat_history[last_user_idx + 1]["content"] if last_user_idx + 1 < len(st.session_state.chat_history) else ""
+    
+    if not last_assistant_a:
+        return ""
+    
+    # Embed the new question and the last question
+    embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    new_vec = embedder.embed_query(user_question)
+    last_vec = embedder.embed_query(last_user_q)
+    
+    sim = cosine_similarity([new_vec], [last_vec])[0][0]
+    
+    if sim >= threshold:
+        return f"Refer to previous Q&A (similarity={sim:.2f}):\nUser: {last_user_q}\nAssistant: {last_assistant_a}\n\n"
+    
+    return ""
+
+def build_prompt_recent_context(user_question: str):
+    followup_context = is_followup_recent(user_question)
+    
     docs = retriever.get_relevant_documents(user_question)
     doc_text = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant context found."
     
@@ -166,7 +183,7 @@ def build_prompt_with_context(user_question: str):
             "Explain concepts clearly, step by step, with examples and common mistakes. "
             "Stay focused only on chemical engineering topics."
         )},
-        {"role": "user", "content": context_text + f"Context:\n{doc_text}\n\nQuestion: {user_question}"}
+        {"role": "user", "content": followup_context + f"Context:\n{doc_text}\n\nQuestion: {user_question}"}
     ]
     return prompt
 
