@@ -6,12 +6,11 @@ from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import time
-import hashlib
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 
 # ================== CONFIG ==================
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
+OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
 K_VAL = int(os.getenv("K_VAL") or 4)
 LLM_MODELS = [
@@ -46,12 +45,10 @@ def show_missing_auth_setup():
 
 def init_firebase():
     """Safely initialize Firebase and cache it in session_state."""
-    # Ensure session keys exist
     for key in ["firebase_app", "firebase_auth", "firebase_db"]:
         if key not in st.session_state:
             st.session_state[key] = None
 
-    # Return cached instance if already initialized
     if st.session_state.firebase_app and st.session_state.firebase_auth:
         return (
             st.session_state.firebase_app,
@@ -77,7 +74,7 @@ def init_firebase():
     try:
         app = pyrebase.initialize_app(cfg)
         auth = app.auth()
-        db = app.database() if "databaseURL" in cfg and cfg["databaseURL"] else None
+        db = app.database() if cfg.get("databaseURL") else None
     except Exception as e:
         st.error(f"Firebase init failed: {e}")
         return None, None, None
@@ -126,11 +123,9 @@ def render_auth_ui():
 
 # ================== FIREBASE CHAT HISTORY ==================
 def encode_email(email: str) -> str:
-    """Firebase paths can't contain '.', '#', '$', '[', or ']'."""
     return email.replace(".", "_dot_").replace("@", "_at_")
 
 def load_chat_history(email: str):
-    """Load user's chat history from Firebase."""
     _, _, db = init_firebase()
     if not db:
         return []
@@ -138,14 +133,12 @@ def load_chat_history(email: str):
         data = db.child("users").child(encode_email(email)).child("chats").get().val()
         if not data:
             return []
-        # Sort by timestamp if available
         return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0))
     except Exception as e:
         st.warning(f"⚠ Failed to load chat history: {e}")
         return []
 
 def save_chat_message(email: str, role: str, content: str):
-    """Save a chat message in Firebase."""
     _, _, db = init_firebase()
     if not db:
         return
@@ -234,13 +227,11 @@ if not user:
 
 email = user.get("email")
 
-# Load chat history
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = load_chat_history(email)
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
-# Chat input
 if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
     save_chat_message(email, "user", user_query)
@@ -254,7 +245,6 @@ if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.last_answer_animated = True
     st.rerun()
 
-# Display chat history
 for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         if (
