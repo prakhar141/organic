@@ -7,7 +7,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 import firebase_admin
-from firebase_admin import credentials, auth, db
+from firebase_admin import credentials, db
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -46,31 +46,30 @@ def init_firebase_admin():
 
 init_firebase_admin()
 
-# ================== AUTH UI ==================
-def render_auth_ui():
-    if "auth_user" not in st.session_state:
-        st.session_state.auth_user = None
+# ================== GOOGLE SIGN-IN VIA FIREBASE ==================
+from pyrebase import pyrebase
 
-    with st.sidebar:
-        if st.session_state.auth_user:
-            st.success(f"Signed in as {st.session_state.auth_user.get('email')}")
-            if st.button("Logout"):
-                st.session_state.auth_user = None
-                st.session_state.chat_history = []
-                st.rerun()
-            return st.session_state.auth_user
-        else:
-            st.info("🔐 Sign in with your Firebase ID token.")
-            token = st.text_input("Paste your Firebase ID Token (JWT)", type="password")
-            if st.button("Sign In"):
-                try:
-                    decoded_token = auth.verify_id_token(token)
-                    email = decoded_token.get("email", "unknown@user")
-                    st.session_state.auth_user = {"email": email, "uid": decoded_token["uid"]}
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Login failed: {e}")
-    return None
+firebase_config = st.secrets["firebase_config"]  # Web API config
+firebase = pyrebase.initialize_app(firebase_config)
+auth = firebase.auth()
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+with st.sidebar:
+    if st.session_state.auth_user:
+        st.success(f"Signed in as {st.session_state.auth_user.get('email')}")
+        if st.button("Logout"):
+            st.session_state.auth_user = None
+            st.session_state.chat_history = []
+            st.experimental_rerun()
+    else:
+        st.markdown("🔐 Sign in with Google to continue")
+        if st.button("Sign in with Google"):
+            # Get Firebase OAuth URL
+            provider = auth.provider('google.com')
+            auth_url = provider.get_auth_url()
+            st.markdown(f"[Click here to sign in with Google]({auth_url})")
 
 # ================== FIREBASE CHAT HISTORY ==================
 def encode_email(email: str) -> str:
@@ -161,11 +160,10 @@ def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
     ]
 
 # ================== MAIN APP ==================
-user = render_auth_ui()
-if not user:
+if not st.session_state.auth_user:
     st.stop()
 
-email = user.get("email")
+email = st.session_state.auth_user.get("email")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = load_chat_history(email)
@@ -184,7 +182,7 @@ if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
     save_chat_message(email, "assistant", answer)
     st.session_state.last_answer_animated = True
-    st.rerun()
+    st.experimental_rerun()
 
 # Display chat history
 for i, chat in enumerate(st.session_state.chat_history):
