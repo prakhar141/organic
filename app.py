@@ -45,13 +45,24 @@ def show_missing_auth_setup():
     )
 
 def init_firebase():
-    if "firebase_app" in st.session_state:
-        return st.session_state.firebase_app, st.session_state.firebase_auth, st.session_state.firebase_db
+    """Safely initialize Firebase and cache it in session_state."""
+    # Ensure session keys exist
+    for key in ["firebase_app", "firebase_auth", "firebase_db"]:
+        if key not in st.session_state:
+            st.session_state[key] = None
+
+    # Return cached instance if already initialized
+    if st.session_state.firebase_app and st.session_state.firebase_auth:
+        return (
+            st.session_state.firebase_app,
+            st.session_state.firebase_auth,
+            st.session_state.firebase_db,
+        )
 
     fb_cfg = st.secrets.get("firebase", None)
     if not pyrebase or not fb_cfg:
         show_missing_auth_setup()
-        st.stop()
+        return None, None, None
 
     cfg = {
         "apiKey": fb_cfg.get("apiKey"),
@@ -63,9 +74,13 @@ def init_firebase():
         "appId": fb_cfg.get("appId"),
     }
 
-    app = pyrebase.initialize_app(cfg)
-    auth = app.auth()
-    db = app.database()
+    try:
+        app = pyrebase.initialize_app(cfg)
+        auth = app.auth()
+        db = app.database() if "databaseURL" in cfg and cfg["databaseURL"] else None
+    except Exception as e:
+        st.error(f"Firebase init failed: {e}")
+        return None, None, None
 
     st.session_state.firebase_app = app
     st.session_state.firebase_auth = auth
@@ -74,7 +89,7 @@ def init_firebase():
 
 # ================== AUTH UI ==================
 def render_auth_ui():
-    """Handles Firebase Google-like login (manual ID token entry fallback)."""
+    """Handles Firebase-like login (manual ID token entry fallback)."""
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
         st.session_state.id_token = None
@@ -117,17 +132,23 @@ def encode_email(email: str) -> str:
 def load_chat_history(email: str):
     """Load user's chat history from Firebase."""
     _, _, db = init_firebase()
+    if not db:
+        return []
     try:
         data = db.child("users").child(encode_email(email)).child("chats").get().val()
         if not data:
             return []
-        return list(data.values())
-    except Exception:
+        # Sort by timestamp if available
+        return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0))
+    except Exception as e:
+        st.warning(f"⚠ Failed to load chat history: {e}")
         return []
 
 def save_chat_message(email: str, role: str, content: str):
     """Save a chat message in Firebase."""
     _, _, db = init_firebase()
+    if not db:
+        return
     try:
         db.child("users").child(encode_email(email)).child("chats").push({
             "role": role,
@@ -213,7 +234,7 @@ if not user:
 
 email = user.get("email")
 
-# Load chat history from Firebase once
+# Load chat history
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = load_chat_history(email)
 if "last_answer_animated" not in st.session_state:
