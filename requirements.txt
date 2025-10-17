@@ -6,3 +6,4 @@ langchain-community
 faiss-cpu
 sentence-transformers
 pyrebase4
+requests<2.28
