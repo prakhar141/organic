@@ -1,21 +1,14 @@
 import os
 import json
+import time
 import requests
 import streamlit as st
 from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import time
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-import subprocess
-import sys
 
-try:
-    import pyrebase
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyrebase4"])
-    import pyrebase
+import firebase_admin
+from firebase_admin import credentials, auth, db
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -28,6 +21,7 @@ LLM_MODELS = [
     "deepseek/deepseek-chat-v3-0324:free",
     "deepseek/deepseek-r1:free"
 ]
+
 FAISS_INDEX_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.faiss"
 FAISS_PKL_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.pkl"
 LOCAL_FAISS_DIR = "./faiss_store"
@@ -38,73 +32,38 @@ st.set_page_config(page_title="ChemEng Buddy", layout="wide")
 st.title("⚗ ChemEng Buddy")
 st.markdown("Your friendly Chemical Engineering study partner")
 
-try:
-    import pyrebase
-except ImportError:
-    pyrebase = None
-
-# ================== FIREBASE INIT ==================
-def show_missing_auth_setup():
-    st.warning(
-        "⚠ Firebase setup missing!\n\n"
-        "1. Install pyrebase4 → `pip install pyrebase4`\n"
-        "2. Add Firebase config in `.streamlit/secrets.toml` under `[firebase]`."
-    )
-
-def init_firebase():
+# ================== FIREBASE ADMIN INIT ==================
+def init_firebase_admin():
     if "firebase_app" not in st.session_state:
         st.session_state.firebase_app = None
-        st.session_state.firebase_auth = None
-        st.session_state.firebase_db = None
-
-    if st.session_state.firebase_app and st.session_state.firebase_auth:
-        return st.session_state.firebase_app, st.session_state.firebase_auth, st.session_state.firebase_db
-
-    if not pyrebase:
-        st.warning("⚠ Please install pyrebase4: pip install pyrebase4")
-        return None, None, None
-
-    fb_cfg = st.secrets.get("firebase", None)
-    if not fb_cfg:
-        st.warning(
-            "⚠ Firebase setup missing in secrets.toml!\n"
-            "Make sure you have `[firebase]` section with correct keys."
-        )
-        return None, None, None
+    if st.session_state.firebase_app:
+        return st.session_state.firebase_app
 
     try:
-        app = pyrebase.initialize_app(dict(fb_cfg))
-        auth = app.auth()
-        db = app.database() if "databaseURL" in fb_cfg else None
+        cred_dict = st.secrets["firebase_admin"]
+        cred = credentials.Certificate(cred_dict)
+        firebase_app = firebase_admin.initialize_app(
+            cred, {"databaseURL": cred_dict["databaseURL"]}
+        )
+        st.session_state.firebase_app = firebase_app
+        return firebase_app
     except Exception as e:
-        st.error(f"Firebase init failed: {e}")
-        return None, None, None
-
-    st.session_state.firebase_app = app
-    st.session_state.firebase_auth = auth
-    st.session_state.firebase_db = db
-    return app, auth, db
+        st.error(f"Firebase Admin init failed: {e}")
+        return None
 
 # ================== AUTH UI ==================
 def render_auth_ui():
-    """Handles Firebase-like login (manual ID token entry fallback)."""
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
-        st.session_state.id_token = None
 
-    app, auth, db = init_firebase()
-
-    if not app or not auth:
-        st.warning("Firebase not configured.")
-        return None
+    init_firebase_admin()
 
     with st.sidebar:
         if st.session_state.auth_user:
-            st.success(f"Signed in as {st.session_state.auth_user.get('email', 'User')}")
+            st.success(f"Signed in as {st.session_state.auth_user.get('email')}")
             if st.button("Logout"):
                 st.session_state.auth_user = None
                 st.session_state.chat_history = []
-                st.session_state.id_token = None
                 st.rerun()
             return st.session_state.auth_user
         else:
@@ -112,11 +71,9 @@ def render_auth_ui():
             token = st.text_input("Paste your Firebase ID Token (JWT)", type="password")
             if st.button("Sign In"):
                 try:
-                    info = auth.get_account_info(token)
-                    email = info["users"][0].get("email", "unknown@user")
-                    user = {"email": email, "idToken": token}
-                    st.session_state.auth_user = user
-                    st.session_state.id_token = token
+                    decoded_token = auth.verify_id_token(token)
+                    email = decoded_token.get("email", "unknown@user")
+                    st.session_state.auth_user = {"email": email, "uid": decoded_token["uid"]}
                     st.rerun()
                 except Exception as e:
                     st.error(f"Login failed: {e}")
@@ -126,29 +83,19 @@ def render_auth_ui():
 def encode_email(email: str) -> str:
     return email.replace(".", "_dot_").replace("@", "_at_")
 
-def load_chat_history(email: str):
-    _, _, db = init_firebase()
-    if not db:
-        return []
+def load_chat_history(email: str) -> List[Dict]:
     try:
-        data = db.child("users").child(encode_email(email)).child("chats").get().val()
-        if not data:
-            return []
+        ref = db.reference(f"users/{encode_email(email)}/chats")
+        data = ref.get() or {}
         return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0))
     except Exception as e:
         st.warning(f"⚠ Failed to load chat history: {e}")
         return []
 
 def save_chat_message(email: str, role: str, content: str):
-    _, _, db = init_firebase()
-    if not db:
-        return
     try:
-        db.child("users").child(encode_email(email)).child("chats").push({
-            "role": role,
-            "content": content,
-            "timestamp": int(time.time())
-        })
+        ref = db.reference(f"users/{encode_email(email)}/chats")
+        ref.push({"role": role, "content": content, "timestamp": int(time.time())})
     except Exception as e:
         st.warning(f"⚠ Failed to save message: {e}")
 
@@ -212,7 +159,6 @@ def query_openrouter(messages: List[Dict[str, str]]) -> str:
 def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
     docs = retriever.get_relevant_documents(user_question)
     doc_text = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant context found."
-
     return [
         {"role": "system", "content": (
             "You are ChemEng Buddy, a helpful tutor for Chemical Engineering. "
@@ -233,6 +179,7 @@ if "chat_history" not in st.session_state:
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
+# Chat input
 if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
     save_chat_message(email, "user", user_query)
@@ -246,6 +193,7 @@ if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.last_answer_animated = True
     st.rerun()
 
+# Display chat history
 for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         if (
