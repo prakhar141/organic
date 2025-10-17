@@ -49,7 +49,7 @@ if id_token and not st.session_state.auth_user:
         user_info = auth.sign_in_with_custom_token(id_token)
         st.session_state.auth_user = user_info
         st.experimental_set_query_params()  # Clear params
-        st.experimental_rerun()
+        st.rerun()
     except Exception as e:
         st.error(f"⚠ Failed to sign in with Google token: {e}")
 
