@@ -5,7 +5,7 @@ import streamlit as st
 from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import pyrebase4 as pyrebase
+import pyrebase
 from urllib.parse import urlparse, parse_qs
 
 # ================== CONFIG ==================
