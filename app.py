@@ -8,6 +8,14 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 import time
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+import subprocess
+import sys
+
+try:
+    import pyrebase
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pyrebase4"])
+    import pyrebase
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
