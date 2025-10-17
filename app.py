@@ -6,6 +6,7 @@ from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import pyrebase4 as pyrebase
+from urllib.parse import urlparse, parse_qs
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -35,9 +36,22 @@ firebase = pyrebase.initialize_app(firebase_config)
 auth = firebase.auth()
 db = firebase.database()
 
-# ================== GOOGLE SIGN-IN ==================
+# ================== GOOGLE SIGN-IN (OAuth via redirect) ==================
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
+
+# Check for OAuth redirect with ID token
+query_params = parse_qs(st.experimental_get_query_params().get("idToken", [""])[0])
+id_token = query_params[0] if query_params else None
+
+if id_token and not st.session_state.auth_user:
+    try:
+        user_info = auth.sign_in_with_custom_token(id_token)
+        st.session_state.auth_user = user_info
+        st.experimental_set_query_params()  # Clear params
+        st.experimental_rerun()
+    except Exception as e:
+        st.error(f"⚠ Failed to sign in with Google token: {e}")
 
 with st.sidebar:
     if st.session_state.auth_user:
@@ -48,10 +62,9 @@ with st.sidebar:
             st.experimental_rerun()
     else:
         st.markdown("🔐 Sign in with Google")
-        if st.button("Sign in with Google"):
-            # Display Google OAuth link
-            st.info("Copy this link and authenticate with Google in your browser:")
-            st.write("https://YOUR_FIREBASE_PROJECT.firebaseapp.com/__/auth/handler")  # Firebase hosting OAuth handler
+        auth_url = firebase_config["authDomain"] + "/__/auth/handler?mode=signIn&providerId=google.com&redirectUrl=" + st.secrets["redirect_url"]
+        st.info("Click below to sign in with Google:")
+        st.markdown(f"[Sign in with Google]({auth_url})", unsafe_allow_html=True)
 
 # Stop app if not logged in
 if not st.session_state.auth_user:
