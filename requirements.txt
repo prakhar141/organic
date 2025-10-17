@@ -6,4 +6,4 @@ faiss-cpu==1.7.4
 sentence-transformers>=2.2.2
 firebase-admin>=6.1.0
 PyMuPDF>=1.23
-pyrebase4>=4.5.0
+pyrebase4==4.5.1
