@@ -5,7 +5,7 @@ import streamlit as st
 from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import pyrebase
+import pyrebase4 as pyrebase
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -30,7 +30,7 @@ st.title("⚗ ChemEng Buddy")
 st.markdown("Your friendly Chemical Engineering study partner")
 
 # ================== FIREBASE CLIENT ==================
-firebase_config = st.secrets["firebase"]  # Use your web config here
+firebase_config = st.secrets["firebase"]  # Your Firebase Web config
 firebase = pyrebase.initialize_app(firebase_config)
 auth = firebase.auth()
 db = firebase.database()
@@ -49,10 +49,15 @@ with st.sidebar:
     else:
         st.markdown("🔐 Sign in with Google")
         if st.button("Sign in with Google"):
-            # This opens the standard Google OAuth pop-up in a browser
-            st.info("Please open your browser console and authenticate with Google using Firebase Auth.")
-            # In Streamlit, full automatic OAuth redirect is tricky. User may need to copy token
-            # Later we can integrate 'streamlit-authenticator' or browser JS for seamless login.
+            # Display Google OAuth link
+            st.info("Copy this link and authenticate with Google in your browser:")
+            st.write("https://YOUR_FIREBASE_PROJECT.firebaseapp.com/__/auth/handler")  # Firebase hosting OAuth handler
+
+# Stop app if not logged in
+if not st.session_state.auth_user:
+    st.stop()
+
+email = st.session_state.auth_user["email"]
 
 # ================== FIREBASE CHAT HISTORY ==================
 def encode_email(email: str) -> str:
@@ -145,11 +150,6 @@ def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
     ]
 
 # ================== MAIN APP ==================
-if not st.session_state.auth_user:
-    st.stop()
-
-email = st.session_state.auth_user["email"]
-
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = load_chat_history(email)
 if "last_answer_animated" not in st.session_state:
