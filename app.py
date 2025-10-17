@@ -5,9 +5,7 @@ import streamlit as st
 from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-
-import firebase_admin
-from firebase_admin import credentials, db
+import pyrebase
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
@@ -31,47 +29,30 @@ st.set_page_config(page_title="ChemEng Buddy", layout="wide")
 st.title("⚗ ChemEng Buddy")
 st.markdown("Your friendly Chemical Engineering study partner")
 
-# ================== FIREBASE ADMIN INIT ==================
-def init_firebase_admin():
-    if not firebase_admin._apps:
-        try:
-            cred_dict = st.secrets["firebase_admin"]
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(
-                cred, {"databaseURL": cred_dict["databaseURL"]}
-            )
-            st.success("Firebase Admin initialized successfully!")
-        except Exception as e:
-            st.error(f"Firebase Admin init failed: {e}")
+# ================== FIREBASE CLIENT ==================
+firebase_config = st.secrets["firebase"]  # Use your web config here
+firebase = pyrebase.initialize_app(firebase_config)
+auth = firebase.auth()
+db = firebase.database()
 
-init_firebase_admin()
-
-# ================== GOOGLE SIGN-IN VIA STREAMLIT ==================
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-
+# ================== GOOGLE SIGN-IN ==================
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
 with st.sidebar:
     if st.session_state.auth_user:
-        st.success(f"Signed in as {st.session_state.auth_user.get('email')}")
+        st.success(f"Signed in as {st.session_state.auth_user['email']}")
         if st.button("Logout"):
             st.session_state.auth_user = None
             st.session_state.chat_history = []
             st.experimental_rerun()
     else:
-        st.markdown("🔐 Sign in with your Google account")
-        google_token = st.text_input("Paste your Google ID token here", type="password")
-        if st.button("Sign in"):
-            try:
-                # Verify Google token
-                idinfo = id_token.verify_oauth2_token(google_token, google_requests.Request())
-                email = idinfo["email"]
-                st.session_state.auth_user = {"email": email, "uid": idinfo["sub"]}
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Google login failed: {e}")
+        st.markdown("🔐 Sign in with Google")
+        if st.button("Sign in with Google"):
+            # This opens the standard Google OAuth pop-up in a browser
+            st.info("Please open your browser console and authenticate with Google using Firebase Auth.")
+            # In Streamlit, full automatic OAuth redirect is tricky. User may need to copy token
+            # Later we can integrate 'streamlit-authenticator' or browser JS for seamless login.
 
 # ================== FIREBASE CHAT HISTORY ==================
 def encode_email(email: str) -> str:
@@ -79,17 +60,19 @@ def encode_email(email: str) -> str:
 
 def load_chat_history(email: str) -> List[Dict]:
     try:
-        ref = db.reference(f"users/{encode_email(email)}/chats")
-        data = ref.get() or {}
-        return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0))
+        data = db.child("users").child(encode_email(email)).child("chats").get().val()
+        return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0)) if data else []
     except Exception as e:
         st.warning(f"⚠ Failed to load chat history: {e}")
         return []
 
 def save_chat_message(email: str, role: str, content: str):
     try:
-        ref = db.reference(f"users/{encode_email(email)}/chats")
-        ref.push({"role": role, "content": content, "timestamp": int(time.time())})
+        db.child("users").child(encode_email(email)).child("chats").push({
+            "role": role,
+            "content": content,
+            "timestamp": int(time.time())
+        })
     except Exception as e:
         st.warning(f"⚠ Failed to save message: {e}")
 
@@ -165,7 +148,7 @@ def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
 if not st.session_state.auth_user:
     st.stop()
 
-email = st.session_state.auth_user.get("email")
+email = st.session_state.auth_user["email"]
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = load_chat_history(email)
@@ -198,15 +181,3 @@ for i, chat in enumerate(st.session_state.chat_history):
             st.session_state.last_answer_animated = False
         else:
             st.markdown(chat["content"])
-
-st.markdown(
-    """
-    <hr style="margin-top: 40px;"/>
-    <div style="text-align: center; color: #888; font-size: 14px;">
-        Built with ❤ by Prakhar Mathur · BITS Pilani ·
-        <br/>
-        📬 Email: <a href="mailto:prakhar.mathur2020@gmail.com">prakhar.mathur2020@gmail.com</a>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
