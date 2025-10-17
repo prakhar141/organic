@@ -46,12 +46,9 @@ def init_firebase_admin():
 
 init_firebase_admin()
 
-# ================== GOOGLE SIGN-IN VIA FIREBASE ==================
-from pyrebase import pyrebase
-
-firebase_config = st.secrets["firebase_config"]  # Web API config
-firebase = pyrebase.initialize_app(firebase_config)
-auth = firebase.auth()
+# ================== GOOGLE SIGN-IN VIA STREAMLIT ==================
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -64,12 +61,17 @@ with st.sidebar:
             st.session_state.chat_history = []
             st.experimental_rerun()
     else:
-        st.markdown("🔐 Sign in with Google to continue")
-        if st.button("Sign in with Google"):
-            # Get Firebase OAuth URL
-            provider = auth.provider('google.com')
-            auth_url = provider.get_auth_url()
-            st.markdown(f"[Click here to sign in with Google]({auth_url})")
+        st.markdown("🔐 Sign in with your Google account")
+        google_token = st.text_input("Paste your Google ID token here", type="password")
+        if st.button("Sign in"):
+            try:
+                # Verify Google token
+                idinfo = id_token.verify_oauth2_token(google_token, google_requests.Request())
+                email = idinfo["email"]
+                st.session_state.auth_user = {"email": email, "uid": idinfo["sub"]}
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Google login failed: {e}")
 
 # ================== FIREBASE CHAT HISTORY ==================
 def encode_email(email: str) -> str:
