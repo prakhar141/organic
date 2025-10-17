@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import requests
 import streamlit as st
@@ -34,29 +33,23 @@ st.markdown("Your friendly Chemical Engineering study partner")
 
 # ================== FIREBASE ADMIN INIT ==================
 def init_firebase_admin():
-    if "firebase_app" not in st.session_state:
-        st.session_state.firebase_app = None
-    if st.session_state.firebase_app:
-        return st.session_state.firebase_app
+    if not firebase_admin._apps:
+        try:
+            cred_dict = st.secrets["firebase_admin"]
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(
+                cred, {"databaseURL": cred_dict["databaseURL"]}
+            )
+            st.success("Firebase Admin initialized successfully!")
+        except Exception as e:
+            st.error(f"Firebase Admin init failed: {e}")
 
-    try:
-        cred_dict = st.secrets["firebase_admin"]
-        cred = credentials.Certificate(cred_dict)
-        firebase_app = firebase_admin.initialize_app(
-            cred, {"databaseURL": cred_dict["databaseURL"]}
-        )
-        st.session_state.firebase_app = firebase_app
-        return firebase_app
-    except Exception as e:
-        st.error(f"Firebase Admin init failed: {e}")
-        return None
+init_firebase_admin()
 
 # ================== AUTH UI ==================
 def render_auth_ui():
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
-
-    init_firebase_admin()
 
     with st.sidebar:
         if st.session_state.auth_user:
