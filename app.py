@@ -44,37 +44,30 @@ def show_missing_auth_setup():
     )
 
 def init_firebase():
-    """Safely initialize Firebase and cache it in session_state."""
-    for key in ["firebase_app", "firebase_auth", "firebase_db"]:
-        if key not in st.session_state:
-            st.session_state[key] = None
+    if "firebase_app" not in st.session_state:
+        st.session_state.firebase_app = None
+        st.session_state.firebase_auth = None
+        st.session_state.firebase_db = None
 
     if st.session_state.firebase_app and st.session_state.firebase_auth:
-        return (
-            st.session_state.firebase_app,
-            st.session_state.firebase_auth,
-            st.session_state.firebase_db,
-        )
+        return st.session_state.firebase_app, st.session_state.firebase_auth, st.session_state.firebase_db
 
-    fb_cfg = st.secrets.get("firebase", None)
-    if not pyrebase or not fb_cfg:
-        show_missing_auth_setup()
+    if not pyrebase:
+        st.warning("⚠ Please install pyrebase4: pip install pyrebase4")
         return None, None, None
 
-    cfg = {
-        "apiKey": fb_cfg.get("apiKey"),
-        "authDomain": fb_cfg.get("authDomain"),
-        "databaseURL": fb_cfg.get("databaseURL"),
-        "projectId": fb_cfg.get("projectId"),
-        "storageBucket": fb_cfg.get("storageBucket"),
-        "messagingSenderId": fb_cfg.get("messagingSenderId"),
-        "appId": fb_cfg.get("appId"),
-    }
+    fb_cfg = st.secrets.get("firebase", None)
+    if not fb_cfg:
+        st.warning(
+            "⚠ Firebase setup missing in secrets.toml!\n"
+            "Make sure you have `[firebase]` section with correct keys."
+        )
+        return None, None, None
 
     try:
-        app = pyrebase.initialize_app(cfg)
+        app = pyrebase.initialize_app(dict(fb_cfg))
         auth = app.auth()
-        db = app.database() if cfg.get("databaseURL") else None
+        db = app.database() if "databaseURL" in fb_cfg else None
     except Exception as e:
         st.error(f"Firebase init failed: {e}")
         return None, None, None
