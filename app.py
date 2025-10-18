@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 import streamlit as st
 from urllib.parse import urlencode
@@ -35,8 +36,8 @@ st.markdown("Your friendly Chemical Engineering study partner 🧪")
 # ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
     try:
-        # Initialize Firebase using service account from Streamlit secrets
-        cred = credentials.Certificate(st.secrets["SERVICE_ACCOUNT_KEY"])
+        service_account_dict = json.loads(st.secrets["SERVICE_ACCOUNT_KEY"])
+        cred = credentials.Certificate(service_account_dict)
         firebase_admin.initialize_app(cred, {
             "databaseURL": st.secrets["firebase"]["databaseURL"]
         })
@@ -105,6 +106,7 @@ def load_chat_history(email: str) -> List[Dict]:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         data = ref.get()
         if data:
+            # Sort messages by timestamp
             return sorted(data.values(), key=lambda x: x.get("timestamp", 0))
         return []
     except Exception as e:
@@ -196,24 +198,28 @@ def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
 # ================== MAIN APP ==================
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = load_chat_history(email)
+
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
 # Chat Input Box
 if user_query := st.chat_input("Ask me anything about Chemical Engineering ⚗"):
+    # Append user message locally & save to Firebase
     st.session_state.chat_history.append({"role": "user", "content": user_query})
     save_chat_message(email, "user", user_query)
 
+    # Get answer
     with st.spinner("Thinking..."):
         prompt = build_prompt_with_context(user_query, st.session_state.chat_history)
         answer = query_openrouter(prompt)
 
+    # Append assistant message locally & save to Firebase
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
     save_chat_message(email, "assistant", answer)
     st.session_state.last_answer_animated = True
     st.rerun()
 
-# Chat Display
+# Display all previous chats
 for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         if (
