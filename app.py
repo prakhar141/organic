@@ -74,8 +74,8 @@ def save_chat_message(email: str, role: str, content: str):
         st.warning(f"⚠ Failed to save message: {e}")
 
 # ================== GOOGLE OAUTH SETUP ==================
-CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
-CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SERVICE"]
+CLIENT_ID = st.secrets["GOOGLE_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_KEY"]
 REDIRECT_URI = st.secrets["redirect_url"]
 
 # Initialize session state
