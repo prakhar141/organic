@@ -18,3 +18,4 @@ sentence-transformers>=2.2.2
 
 # PDF support
 PyMuPDF>=1.23.0
+firebase_admin
