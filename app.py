@@ -36,11 +36,20 @@ st.markdown("Your friendly Chemical Engineering study partner 🧪")
 # ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
     try:
-        service_account_dict = json.loads(st.secrets["SERVICE_ACCOUNT"]["key"])
+        # Load the service account JSON string
+        service_account_json = st.secrets["SERVICE_ACCOUNT"]["key"]
+
+        # Parse JSON
+        service_account_dict = json.loads(service_account_json)
+
+        # Make sure the private key has proper newlines
+        service_account_dict["private_key"] = service_account_dict["private_key"].replace('\\n', '\n')
+
         cred = credentials.Certificate(service_account_dict)
         firebase_admin.initialize_app(cred, {
             "databaseURL": st.secrets["firebase"]["databaseURL"]
         })
+        st.success("✅ Firebase initialized successfully!")
     except Exception as e:
         st.error(f"⚠ Firebase init failed: {e}")
 # ================== GOOGLE OAUTH SETUP ==================
