@@ -94,10 +94,9 @@ auth_params = {
 }
 google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(auth_params)
 
-# Handle OAuth redirect
-qs = st.experimental_get_query_params()
-code_list = qs.get("code")
-error_list = qs.get("error")
+# Handle OAuth redirect using st.query_params
+code_list = st.query_params.get("code")
+error_list = st.query_params.get("error")
 
 if error_list:
     st.error(f"Google OAuth error: {error_list}")
@@ -134,7 +133,9 @@ elif code_list and not st.session_state.auth_user:
         st.session_state.access_token = access_token
         st.session_state.refresh_token = refresh_token
         st.session_state.auth_user = {"email": user_info["email"], "name": user_info["name"]}
-        st.experimental_set_query_params()  # Clear code from URL
+
+        # Clear query params
+        st.experimental_set_query_params()
         st.session_state.chat_history = load_chat_history(st.session_state.auth_user["email"])
         st.experimental_rerun()
     except Exception as e:
