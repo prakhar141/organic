@@ -38,6 +38,7 @@ if not firebase_admin._apps:
     try:
         service_account_json = st.secrets["SERVICE_ACCOUNT"]["key"]
         service_account_dict = json.loads(service_account_json)
+        # Ensure PEM newlines are real newlines
         service_account_dict["private_key"] = service_account_dict["private_key"].replace("\\n", "\n")
         cred = credentials.Certificate(service_account_dict)
         firebase_admin.initialize_app(cred, {
@@ -47,69 +48,17 @@ if not firebase_admin._apps:
     except Exception as e:
         st.error(f"⚠ Firebase init failed: {e}")
 
-# ================== GOOGLE OAUTH SETUP ==================
-if "auth_user" not in st.session_state:
-    st.session_state.auth_user = None
-
-query_params = st.query_params.to_dict()
-access_token = query_params.get("access_token")
-
-if access_token and not st.session_state.auth_user:
-    try:
-        user_info = requests.get(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"}
-        ).json()
-
-        st.session_state.auth_user = {
-            "email": user_info.get("email"),
-            "name": user_info.get("name")
-        }
-
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"⚠ Failed to fetch Google user info: {e}")
-
-# Sidebar login/logout
-with st.sidebar:
-    if st.session_state.auth_user:
-        st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
-        if st.button("Logout"):
-            st.session_state.auth_user = None
-            st.session_state.chat_history = []
-            st.rerun()
-    else:
-        st.markdown("🔐 **Sign in with Google**")
-        client_id = st.secrets["GOOGLE_CLIENT_ID"]
-        redirect_url = st.secrets["redirect_url"]
-
-        params = {
-            "client_id": client_id,
-            "redirect_uri": redirect_url,
-            "response_type": "token",
-            "scope": "email profile openid"
-        }
-        google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
-        st.markdown(f"[👉 Sign in with Google]({google_auth_url})", unsafe_allow_html=True)
-
-# Stop if not logged in
-if not st.session_state.auth_user:
-    st.stop()
-
-email = st.session_state.auth_user["email"]
-
-# ================== FIREBASE CHAT HISTORY ==================
+# ================== FIREBASE CHAT HISTORY (defined BEFORE OAuth) ==================
 def encode_email(email: str) -> str:
     """Encode email safely for Firebase keys."""
     return email.replace(".", "_dot_").replace("@", "_at_")
 
 def load_chat_history(email: str) -> List[Dict]:
+    """Load chat history from Firebase for a given email."""
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         data = ref.get()
         if data:
-            # Sort messages by timestamp
             return sorted(data.values(), key=lambda x: x.get("timestamp", 0))
         return []
     except Exception as e:
@@ -117,6 +66,7 @@ def load_chat_history(email: str) -> List[Dict]:
         return []
 
 def save_chat_message(email: str, role: str, content: str):
+    """Save a single chat message to Firebase under the user's node."""
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         ref.push({
@@ -126,6 +76,110 @@ def save_chat_message(email: str, role: str, content: str):
         })
     except Exception as e:
         st.warning(f"⚠ Failed to save message: {e}")
+
+# ================== GOOGLE OAUTH SETUP (Authorization Code flow) ==================
+CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
+CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SERVICE"]
+REDIRECT_URI = st.secrets["redirect_url"]
+
+# Initialize auth/session state
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+if "refresh_token" not in st.session_state:
+    st.session_state.refresh_token = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Build authorization URL (server-side code flow)
+auth_params = {
+    "client_id": CLIENT_ID,
+    "redirect_uri": REDIRECT_URI,
+    "response_type": "code",
+    "scope": "openid email profile",
+    "access_type": "offline",   # request refresh token
+    "prompt": "consent"         # forces consent (useful while testing)
+}
+google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(auth_params)
+
+# Handle the OAuth redirect with code
+qs = st.experimental_get_query_params()
+code_list = qs.get("code")
+error_list = qs.get("error")
+
+if error_list:
+    st.error(f"Google OAuth error: {error_list}")
+elif code_list and not st.session_state.auth_user:
+    code = code_list[0]
+    try:
+        token_resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "redirect_uri": REDIRECT_URI,
+                "grant_type": "authorization_code"
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10
+        )
+        token_resp.raise_for_status()
+        tokens = token_resp.json()
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        if not access_token:
+            raise RuntimeError("No access_token returned from Google.")
+
+        # Fetch userinfo
+        user_info = requests.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10
+        ).json()
+
+        # Save to session
+        st.session_state.access_token = access_token
+        if refresh_token:
+            st.session_state.refresh_token = refresh_token
+        st.session_state.auth_user = {
+            "email": user_info.get("email"),
+            "name": user_info.get("name")
+        }
+
+        # Clear query params and load chat history
+        st.experimental_set_query_params()
+        st.success(f"✅ Signed in as {st.session_state.auth_user['email']}")
+
+        # Load user's chat history from Firebase now that we're authenticated
+        st.session_state.chat_history = load_chat_history(st.session_state.auth_user["email"])
+
+        # Re-run to show the app
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"OAuth token exchange failed: {e}")
+
+# Sidebar: login / logout UI
+with st.sidebar:
+    if st.session_state.auth_user:
+        st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
+        if st.button("Logout"):
+            st.session_state.auth_user = None
+            st.session_state.access_token = None
+            st.session_state.refresh_token = None
+            st.session_state.chat_history = []
+            st.experimental_rerun()
+    else:
+        st.markdown("🔐 **Sign in with Google**")
+        st.markdown(f"[👉 Sign in with Google]({google_auth_url})", unsafe_allow_html=True)
+
+# Stop app if user not logged in
+if not st.session_state.auth_user:
+    st.stop()
+
+email = st.session_state.auth_user["email"]
 
 # ================== UI HELPERS ==================
 def type_like_chatgpt(text, speed=0.004):
