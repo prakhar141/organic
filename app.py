@@ -36,7 +36,6 @@ st.markdown("Your friendly Chemical Engineering study partner 🧪")
 # ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
     try:
-        # Load the service account JSON from the [SERVICE_ACCOUNT] table in secrets.toml
         service_account_dict = json.loads(st.secrets["SERVICE_ACCOUNT"]["key"])
         cred = credentials.Certificate(service_account_dict)
         firebase_admin.initialize_app(cred, {
@@ -44,7 +43,6 @@ if not firebase_admin._apps:
         })
     except Exception as e:
         st.error(f"⚠ Firebase init failed: {e}")
-
 # ================== GOOGLE OAUTH SETUP ==================
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
