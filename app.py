@@ -35,8 +35,8 @@ st.markdown("Your friendly Chemical Engineering study partner 🧪")
 # ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
     try:
-        # Initialize Firebase using anonymous credentials (works with your web config)
-        cred = credentials.AnonymousCredentials()
+        # Initialize Firebase using service account from Streamlit secrets
+        cred = credentials.Certificate(st.secrets["SERVICE_ACCOUNT_KEY"])
         firebase_admin.initialize_app(cred, {
             "databaseURL": st.secrets["firebase"]["databaseURL"]
         })
