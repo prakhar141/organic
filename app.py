@@ -34,10 +34,14 @@ st.markdown("Your friendly Chemical Engineering study partner 🧪")
 
 # ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
-    cred_obj = credentials.Certificate(st.secrets["firebase"])
-    firebase_admin.initialize_app(cred_obj, {
-        "databaseURL": st.secrets["firebase"]["databaseURL"]
-    })
+    try:
+        # Initialize Firebase using anonymous credentials (works with your web config)
+        cred = credentials.AnonymousCredentials()
+        firebase_admin.initialize_app(cred, {
+            "databaseURL": st.secrets["firebase"]["databaseURL"]
+        })
+    except Exception as e:
+        st.error(f"⚠ Firebase init failed: {e}")
 
 # ================== GOOGLE OAUTH SETUP ==================
 if "auth_user" not in st.session_state:
@@ -46,7 +50,6 @@ if "auth_user" not in st.session_state:
 query_params = st.query_params.to_dict()
 access_token = query_params.get("access_token")
 
-# Handle redirect after login
 if access_token and not st.session_state.auth_user:
     try:
         user_info = requests.get(
@@ -61,11 +64,10 @@ if access_token and not st.session_state.auth_user:
 
         st.query_params.clear()
         st.rerun()
-
     except Exception as e:
         st.error(f"⚠ Failed to fetch Google user info: {e}")
 
-# Sidebar: login/logout controls
+# Sidebar login/logout
 with st.sidebar:
     if st.session_state.auth_user:
         st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
@@ -84,11 +86,10 @@ with st.sidebar:
             "response_type": "token",
             "scope": "email profile openid"
         }
-
         google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
         st.markdown(f"[👉 Sign in with Google]({google_auth_url})", unsafe_allow_html=True)
 
-# Stop app if user not logged in
+# Stop if not logged in
 if not st.session_state.auth_user:
     st.stop()
 
@@ -100,7 +101,6 @@ def encode_email(email: str) -> str:
     return email.replace(".", "_dot_").replace("@", "_at_")
 
 def load_chat_history(email: str) -> List[Dict]:
-    """Load chat history from Firebase."""
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         data = ref.get()
@@ -112,7 +112,6 @@ def load_chat_history(email: str) -> List[Dict]:
         return []
 
 def save_chat_message(email: str, role: str, content: str):
-    """Save chat message to Firebase."""
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         ref.push({
@@ -169,7 +168,6 @@ HEADERS = {
 }
 
 def query_openrouter(messages: List[Dict[str, str]]) -> str:
-    """Query multiple OpenRouter models until one succeeds."""
     for model_name in LLM_MODELS:
         try:
             thinking_animation(duration=2)
