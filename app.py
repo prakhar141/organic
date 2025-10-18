@@ -36,7 +36,8 @@ st.markdown("Your friendly Chemical Engineering study partner 🧪")
 # ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
     try:
-        service_account_dict = json.loads(st.secrets["SERVICE_ACCOUNT_KEY"])
+        # Load the service account JSON from the [SERVICE_ACCOUNT] table in secrets.toml
+        service_account_dict = json.loads(st.secrets["SERVICE_ACCOUNT"]["key"])
         cred = credentials.Certificate(service_account_dict)
         firebase_admin.initialize_app(cred, {
             "databaseURL": st.secrets["firebase"]["databaseURL"]
