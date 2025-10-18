@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import requests
 import streamlit as st
 from urllib.parse import urlencode
@@ -11,9 +10,10 @@ import firebase_admin
 from firebase_admin import credentials, db
 
 # ================== CONFIG ==================
-OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 K_VAL = 4
+
 LLM_MODELS = [
     "deepseek/deepseek-chat-v3.1:free",
     "mistralai/mistral-small-3.2-24b-instruct:free",
@@ -30,23 +30,23 @@ os.makedirs(LOCAL_FAISS_DIR, exist_ok=True)
 # ================== STREAMLIT SETUP ==================
 st.set_page_config(page_title="⚗ ChemEng Buddy", layout="wide")
 st.title("⚗ ChemEng Buddy")
-st.markdown("Your friendly Chemical Engineering study partner")
+st.markdown("Your friendly Chemical Engineering study partner 🧪")
 
-# ================== FIREBASE ADMIN (Service Account) ==================
+# ================== FIREBASE ADMIN ==================
 if not firebase_admin._apps:
-    cred = credentials.Certificate(st.secrets["firebase_service_account"])
-    firebase_admin.initialize_app(cred, {
+    cred_obj = credentials.Certificate(st.secrets["firebase"])
+    firebase_admin.initialize_app(cred_obj, {
         "databaseURL": st.secrets["firebase"]["databaseURL"]
     })
 
-# ================== AUTH (Google OAuth) ==================
+# ================== GOOGLE OAUTH SETUP ==================
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
 query_params = st.query_params.to_dict()
 access_token = query_params.get("access_token")
 
-# Step 1: Handle redirect after login
+# Handle redirect after login
 if access_token and not st.session_state.auth_user:
     try:
         user_info = requests.get(
@@ -65,10 +65,10 @@ if access_token and not st.session_state.auth_user:
     except Exception as e:
         st.error(f"⚠ Failed to fetch Google user info: {e}")
 
-# Step 2: Sidebar login/logout UI
+# Sidebar: login/logout controls
 with st.sidebar:
     if st.session_state.auth_user:
-        st.success(f"Signed in as {st.session_state.auth_user['email']}")
+        st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
         if st.button("Logout"):
             st.session_state.auth_user = None
             st.session_state.chat_history = []
@@ -76,11 +76,7 @@ with st.sidebar:
     else:
         st.markdown("🔐 **Sign in with Google**")
         client_id = st.secrets["GOOGLE_CLIENT_ID"]
-        redirect_url = st.secrets.get("redirect_url", "")
-
-        if not redirect_url:
-            st.error("⚠ Missing redirect_url in secrets.toml")
-            st.stop()
+        redirect_url = st.secrets["redirect_url"]
 
         params = {
             "client_id": client_id,
@@ -88,8 +84,9 @@ with st.sidebar:
             "response_type": "token",
             "scope": "email profile openid"
         }
-        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
-        st.markdown(f"[👉 Sign in with Google]({auth_url})", unsafe_allow_html=True)
+
+        google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+        st.markdown(f"[👉 Sign in with Google]({google_auth_url})", unsafe_allow_html=True)
 
 # Stop app if user not logged in
 if not st.session_state.auth_user:
@@ -99,9 +96,11 @@ email = st.session_state.auth_user["email"]
 
 # ================== FIREBASE CHAT HISTORY ==================
 def encode_email(email: str) -> str:
+    """Encode email safely for Firebase keys."""
     return email.replace(".", "_dot_").replace("@", "_at_")
 
 def load_chat_history(email: str) -> List[Dict]:
+    """Load chat history from Firebase."""
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         data = ref.get()
@@ -113,6 +112,7 @@ def load_chat_history(email: str) -> List[Dict]:
         return []
 
 def save_chat_message(email: str, role: str, content: str):
+    """Save chat message to Firebase."""
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
         ref.push({
@@ -152,7 +152,7 @@ def download_file(url: str, local_path: str):
 download_file(FAISS_INDEX_URL, os.path.join(LOCAL_FAISS_DIR, "index.faiss"))
 download_file(FAISS_PKL_URL, os.path.join(LOCAL_FAISS_DIR, "index.pkl"))
 
-# ================== VECTOR DB ==================
+# ================== VECTOR DATABASE ==================
 @st.cache_resource
 def load_vector_db():
     embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
@@ -161,11 +161,15 @@ def load_vector_db():
 
 retriever = load_vector_db()
 
-# ================== OPENROUTER ==================
+# ================== OPENROUTER API ==================
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "Content-Type": "application/json"
+}
 
 def query_openrouter(messages: List[Dict[str, str]]) -> str:
+    """Query multiple OpenRouter models until one succeeds."""
     for model_name in LLM_MODELS:
         try:
             thinking_animation(duration=2)
@@ -177,7 +181,7 @@ def query_openrouter(messages: List[Dict[str, str]]) -> str:
                 return data["choices"][0]["message"]["content"]
         except Exception:
             continue
-    return "⚠ All LLMs failed to respond."
+    return "⚠ All LLMs failed to respond. Try again later."
 
 # ================== CONTEXT BUILDER ==================
 def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
@@ -185,8 +189,8 @@ def build_prompt_with_context(user_question: str, chat_history: List[Dict]):
     doc_text = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant context found."
     return [
         {"role": "system", "content": (
-            "You are ChemEng Buddy, a helpful tutor for Chemical Engineering. "
-            "Explain clearly, step by step, with examples and common mistakes."
+            "You are ChemEng Buddy, a helpful Chemical Engineering tutor. "
+            "Explain concepts clearly, step by step, and give examples where possible."
         )},
         {"role": "user", "content": f"Context:\n{doc_text}\n\nQuestion: {user_question}"}
     ]
@@ -197,8 +201,8 @@ if "chat_history" not in st.session_state:
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
-# Chat input
-if user_query := st.chat_input("Ask me about Chemical Engineering"):
+# Chat Input Box
+if user_query := st.chat_input("Ask me anything about Chemical Engineering ⚗"):
     st.session_state.chat_history.append({"role": "user", "content": user_query})
     save_chat_message(email, "user", user_query)
 
@@ -211,7 +215,7 @@ if user_query := st.chat_input("Ask me about Chemical Engineering"):
     st.session_state.last_answer_animated = True
     st.rerun()
 
-# Display chat history
+# Chat Display
 for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user" if chat["role"] == "user" else "assistant"):
         if (
