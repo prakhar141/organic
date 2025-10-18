@@ -1,17 +1,19 @@
 import os
 import time
+import json
 import requests
 import streamlit as st
+from urllib.parse import urlencode
 from typing import List, Dict
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import pyrebase
-from urllib.parse import parse_qs
+import firebase_admin
+from firebase_admin import credentials, db
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
-EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
-K_VAL = int(os.getenv("K_VAL") or 4)
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+K_VAL = 4
 LLM_MODELS = [
     "deepseek/deepseek-chat-v3.1:free",
     "mistralai/mistral-small-3.2-24b-instruct:free",
@@ -30,33 +32,40 @@ st.set_page_config(page_title="⚗ ChemEng Buddy", layout="wide")
 st.title("⚗ ChemEng Buddy")
 st.markdown("Your friendly Chemical Engineering study partner")
 
-# ================== FIREBASE CLIENT ==================
-firebase_config = st.secrets["firebase"]
-firebase = pyrebase.initialize_app(firebase_config)
-auth = firebase.auth()
-db = firebase.database()
+# ================== FIREBASE ADMIN (Service Account) ==================
+if not firebase_admin._apps:
+    cred = credentials.Certificate(st.secrets["firebase_service_account"])
+    firebase_admin.initialize_app(cred, {
+        "databaseURL": st.secrets["firebase"]["databaseURL"]
+    })
 
-# ================== GOOGLE SIGN-IN (OAuth via redirect) ==================
+# ================== AUTH (Google OAuth) ==================
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
-# Get current query params using new Streamlit API
 query_params = st.query_params.to_dict()
-id_token = query_params.get("idToken")
+access_token = query_params.get("access_token")
 
-# Handle OAuth token (from redirect)
-if id_token and not st.session_state.auth_user:
+# Step 1: Handle redirect after login
+if access_token and not st.session_state.auth_user:
     try:
-        user_info = auth.sign_in_with_custom_token(id_token)
-        st.session_state.auth_user = user_info
+        user_info = requests.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        ).json()
 
-        # Clear query params after login
+        st.session_state.auth_user = {
+            "email": user_info.get("email"),
+            "name": user_info.get("name")
+        }
+
         st.query_params.clear()
         st.rerun()
 
     except Exception as e:
-        st.error(f"⚠ Failed to sign in with Google token: {e}")
+        st.error(f"⚠ Failed to fetch Google user info: {e}")
 
+# Step 2: Sidebar login/logout UI
 with st.sidebar:
     if st.session_state.auth_user:
         st.success(f"Signed in as {st.session_state.auth_user['email']}")
@@ -66,19 +75,23 @@ with st.sidebar:
             st.rerun()
     else:
         st.markdown("🔐 **Sign in with Google**")
+        client_id = st.secrets["GOOGLE_CLIENT_ID"]
         redirect_url = st.secrets.get("redirect_url", "")
+
         if not redirect_url:
             st.error("⚠ Missing redirect_url in secrets.toml")
             st.stop()
 
-        auth_url = (
-            f"{firebase_config['authDomain']}/__/auth/handler?"
-            f"mode=signIn&providerId=google.com&redirectUrl={redirect_url}"
-        )
-        st.info("Click below to sign in with Google:")
-        st.markdown(f"[Sign in with Google]({auth_url})", unsafe_allow_html=True)
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_url,
+            "response_type": "token",
+            "scope": "email profile openid"
+        }
+        auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+        st.markdown(f"[👉 Sign in with Google]({auth_url})", unsafe_allow_html=True)
 
-# Stop app if not logged in
+# Stop app if user not logged in
 if not st.session_state.auth_user:
     st.stop()
 
@@ -90,15 +103,19 @@ def encode_email(email: str) -> str:
 
 def load_chat_history(email: str) -> List[Dict]:
     try:
-        data = db.child("users").child(encode_email(email)).child("chats").get().val()
-        return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0)) if data else []
+        ref = db.reference(f"users/{encode_email(email)}/chats")
+        data = ref.get()
+        if data:
+            return sorted(data.values(), key=lambda x: x.get("timestamp", 0))
+        return []
     except Exception as e:
         st.warning(f"⚠ Failed to load chat history: {e}")
         return []
 
 def save_chat_message(email: str, role: str, content: str):
     try:
-        db.child("users").child(encode_email(email)).child("chats").push({
+        ref = db.reference(f"users/{encode_email(email)}/chats")
+        ref.push({
             "role": role,
             "content": content,
             "timestamp": int(time.time())
