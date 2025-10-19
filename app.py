@@ -72,8 +72,7 @@ def save_chat_message(email: str, role: str, content: str):
         })
     except Exception as e:
         st.warning(f"⚠ Failed to save message: {e}")
-
-# ===== REPLACEMENT: Robust Google OAuth block =====
+# ===== REPLACEMENT: Robust Google OAuth block (same-tab sign-in) =====
 import secrets
 import urllib.parse
 
@@ -120,8 +119,6 @@ elif code_list and state_list and (state_list[0] == st.session_state.oauth_state
     st.session_state.auth_code_exchanged = True  # mark immediately so reload doesn't reuse
     code = code_list[0]
 
-    # Extra debug: show length/first few chars to detect truncation
-    st.debug = lambda *a, **k: None  # no-op if st.debug not available; replace with print if needed
     try:
         # URL-encode payload
         token_payload = urllib.parse.urlencode({
@@ -169,7 +166,7 @@ elif code_list and state_list and (state_list[0] == st.session_state.oauth_state
                     # clear query params to avoid accidental reuse
                     st.experimental_set_query_params()
                     st.session_state.chat_history = load_chat_history(st.session_state.auth_user["email"])
-                    st.rerun()
+                    st.experimental_rerun()
 
     except requests.exceptions.RequestException as e:
         st.error(f"Network error during OAuth: {e}")
@@ -181,8 +178,13 @@ elif code_list and state_list and (state_list[0] == st.session_state.oauth_state
 elif code_list and state_list and state_list[0] != st.session_state.oauth_state:
     # state mismatch — likely a session / cross-tab problem
     st.error("State mismatch detected. Please click Sign in again (use the same tab).")
+    if st.button("Restart sign-in (reset)"):
+        # reset the state so user can try again in the same tab
+        st.session_state.oauth_state = None
+        st.session_state.auth_code_exchanged = False
+        st.experimental_rerun()
 
-# Sidebar UI: same-tab link (no target="_blank")
+# Sidebar UI: same-tab link (target="_self" forces same tab navigation)
 with st.sidebar:
     if st.session_state.auth_user:
         st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
@@ -193,11 +195,16 @@ with st.sidebar:
             st.session_state.chat_history = []
             st.session_state.auth_code_exchanged = False
             st.session_state.oauth_state = None
-            st.rerun()
+            st.experimental_rerun()
     else:
         st.markdown("🔐 **Sign in with Google**")
-        # IMPORTANT: open in same tab (no target attribute)
-        st.markdown(f'<a href="{google_auth_url}">👉 Sign in with Google</a>', unsafe_allow_html=True)
+        # IMPORTANT: target="_self" instructs the browser to open the link in the same tab
+        st.markdown(
+            f'<a href="{google_auth_url}" target="_self">👉 Sign in with Google (same tab)</a>'
+            "  \n\n⚠️ Please do not open in a new tab and do not reload the page after signing in.",
+            unsafe_allow_html=True
+        )
+
 # ================== UI HELPERS ==================
 def type_like_chatgpt(text, speed=0.004):
     placeholder = st.empty()
