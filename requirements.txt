@@ -13,7 +13,7 @@ pycryptodome==3.19.0
 # LangChain + embeddings + FAISS
 langchain>=0.1.182
 langchain-community>=0.0.206
-faiss-cpu==1.7.4
+faiss-cpu
 sentence-transformers>=2.2.2
 
 # PDF support
