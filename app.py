@@ -74,17 +74,18 @@ def save_chat_message(email: str, role: str, content: str):
         st.warning(f"⚠ Failed to save message: {e}")
 
 # ================== GOOGLE OAUTH SETUP ==================
-# ================== GOOGLE OAUTH SETUP ==================
 CLIENT_ID = st.secrets["GOOGLE_ID"]
 CLIENT_SECRET = st.secrets["GOOGLE_KEY"]
 REDIRECT_URI = st.secrets["redirect_url"]
 
 # Initialize session state
-for key in ["auth_user", "access_token", "refresh_token", "chat_history", "last_answer_animated"]:
+for key in ["auth_user", "access_token", "refresh_token", "chat_history", "last_answer_animated", "auth_code_exchanged"]:
     if key not in st.session_state:
-        st.session_state[key] = None if key != "chat_history" else []
+        st.session_state[key] = None if key not in ["chat_history", "auth_code_exchanged"] else False
+        if key == "chat_history":
+            st.session_state[key] = []
 
-# Build Google OAuth URL
+# Build Google OAuth URL (open in same tab)
 auth_params = {
     "client_id": CLIENT_ID,
     "redirect_uri": REDIRECT_URI,
@@ -95,18 +96,20 @@ auth_params = {
 }
 google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(auth_params)
 
-# Handle OAuth redirect using st.query_params
+# Handle OAuth redirect
 code_list = st.query_params.get("code")
 error_list = st.query_params.get("error")
 
 if error_list:
     st.error(f"Google OAuth error from redirect: {error_list}")
-elif code_list and not st.session_state.auth_user:
+
+elif code_list and not st.session_state.auth_user and not st.session_state.auth_code_exchanged:
+    st.session_state.auth_code_exchanged = True  # prevent reuse
     code = code_list[0]
     try:
         import urllib.parse
 
-        # Prepare token request properly URL-encoded
+        # URL-encode the token request
         token_data = urllib.parse.urlencode({
             "code": code,
             "client_id": CLIENT_ID,
@@ -122,7 +125,6 @@ elif code_list and not st.session_state.auth_user:
             timeout=10
         )
 
-        # Check for errors explicitly
         if token_resp.status_code != 200:
             st.error(f"Google OAuth token request failed: {token_resp.status_code}\nResponse:\n{token_resp.text}")
         else:
@@ -138,7 +140,6 @@ elif code_list and not st.session_state.auth_user:
                     headers={"Authorization": f"Bearer {access_token}"},
                     timeout=10
                 )
-
                 if user_info_resp.status_code != 200:
                     st.error(f"Failed to fetch user info: {user_info_resp.status_code}\n{user_info_resp.text}")
                 else:
@@ -147,7 +148,7 @@ elif code_list and not st.session_state.auth_user:
                     st.session_state.refresh_token = refresh_token
                     st.session_state.auth_user = {"email": user_info["email"], "name": user_info["name"]}
 
-                    # Clear query params
+                    # Clear query params to prevent code reuse
                     st.experimental_set_query_params()
                     st.session_state.chat_history = load_chat_history(st.session_state.auth_user["email"])
                     st.experimental_rerun()
@@ -157,7 +158,7 @@ elif code_list and not st.session_state.auth_user:
     except Exception as e:
         st.error(f"Unexpected error during OAuth: {e}")
 
-# Sidebar: login/logout
+# Sidebar login/logout
 with st.sidebar:
     if st.session_state.auth_user:
         st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
@@ -166,10 +167,12 @@ with st.sidebar:
             st.session_state.access_token = None
             st.session_state.refresh_token = None
             st.session_state.chat_history = []
+            st.session_state.auth_code_exchanged = False
             st.experimental_rerun()
     else:
         st.markdown("🔐 **Sign in with Google**")
-        st.markdown(f"[👉 Sign in with Google]({google_auth_url})", unsafe_allow_html=True)
+        # Open in same tab, not new tab
+        st.markdown(f'<a href="{google_auth_url}">👉 Sign in with Google</a>', unsafe_allow_html=True)
 
 # ================== UI HELPERS ==================
 def type_like_chatgpt(text, speed=0.004):
