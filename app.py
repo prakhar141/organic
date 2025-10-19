@@ -73,44 +73,58 @@ def save_chat_message(email: str, role: str, content: str):
     except Exception as e:
         st.warning(f"⚠ Failed to save message: {e}")
 
-# ================== GOOGLE OAUTH SETUP ==================
+# ===== REPLACEMENT: Robust Google OAuth block =====
+import secrets
+import urllib.parse
+
 CLIENT_ID = st.secrets["GOOGLE_ID"]
 CLIENT_SECRET = st.secrets["GOOGLE_KEY"]
 REDIRECT_URI = st.secrets["redirect_url"]
 
-# Initialize session state
-for key in ["auth_user", "access_token", "refresh_token", "chat_history", "last_answer_animated", "auth_code_exchanged"]:
+# init session keys
+for key in ["auth_user","access_token","refresh_token","chat_history","last_answer_animated","auth_code_exchanged","oauth_state"]:
     if key not in st.session_state:
-        st.session_state[key] = None if key not in ["chat_history", "auth_code_exchanged"] else False
         if key == "chat_history":
             st.session_state[key] = []
+        elif key == "auth_code_exchanged":
+            st.session_state[key] = False
+        else:
+            st.session_state[key] = None
 
-# Build Google OAuth URL (open in same tab)
+# generate state if missing
+if not st.session_state.oauth_state:
+    st.session_state.oauth_state = secrets.token_urlsafe(16)
+
 auth_params = {
     "client_id": CLIENT_ID,
     "redirect_uri": REDIRECT_URI,
     "response_type": "code",
     "scope": "openid email profile",
     "access_type": "offline",
-    "prompt": "consent"
+    "prompt": "consent",
+    "state": st.session_state.oauth_state
 }
-google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(auth_params)
+google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(auth_params)
 
-# Handle OAuth redirect
+# parse redirect query parameters
 code_list = st.query_params.get("code")
+state_list = st.query_params.get("state")
 error_list = st.query_params.get("error")
 
+# show errors from redirect
 if error_list:
-    st.error(f"Google OAuth error from redirect: {error_list}")
+    st.error(f"Google OAuth returned error: {error_list}")
 
-elif code_list and not st.session_state.auth_user and not st.session_state.auth_code_exchanged:
-    st.session_state.auth_code_exchanged = True  # prevent reuse
+# only attempt exchange if we have a code, the state matches, user not already set, and not exchanged before
+elif code_list and state_list and (state_list[0] == st.session_state.oauth_state) and (not st.session_state.auth_user) and (not st.session_state.auth_code_exchanged):
+    st.session_state.auth_code_exchanged = True  # mark immediately so reload doesn't reuse
     code = code_list[0]
-    try:
-        import urllib.parse
 
-        # URL-encode the token request
-        token_data = urllib.parse.urlencode({
+    # Extra debug: show length/first few chars to detect truncation
+    st.debug = lambda *a, **k: None  # no-op if st.debug not available; replace with print if needed
+    try:
+        # URL-encode payload
+        token_payload = urllib.parse.urlencode({
             "code": code,
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
@@ -120,45 +134,55 @@ elif code_list and not st.session_state.auth_user and not st.session_state.auth_
 
         token_resp = requests.post(
             "https://oauth2.googleapis.com/token",
-            data=token_data,
+            data=token_payload,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=10
+            timeout=15
         )
 
         if token_resp.status_code != 200:
-            st.error(f"Google OAuth token request failed: {token_resp.status_code}\nResponse:\n{token_resp.text}")
+            # Very explicit error message for debugging
+            st.error(f"Google OAuth token request failed: {token_resp.status_code}\nResponse: {token_resp.text}")
+            # Reset flag so user can retry the flow
+            st.session_state.auth_code_exchanged = False
         else:
             tokens = token_resp.json()
             access_token = tokens.get("access_token")
             refresh_token = tokens.get("refresh_token")
             if not access_token:
-                st.error(f"No access_token returned. Full response:\n{tokens}")
+                st.error(f"No access_token in response. Full response:\n{tokens}")
+                st.session_state.auth_code_exchanged = False
             else:
-                # Fetch user info
+                # get userinfo
                 user_info_resp = requests.get(
                     "https://www.googleapis.com/oauth2/v3/userinfo",
                     headers={"Authorization": f"Bearer {access_token}"},
                     timeout=10
                 )
                 if user_info_resp.status_code != 200:
-                    st.error(f"Failed to fetch user info: {user_info_resp.status_code}\n{user_info_resp.text}")
+                    st.error(f"Failed to fetch userinfo: {user_info_resp.status_code}\n{user_info_resp.text}")
+                    st.session_state.auth_code_exchanged = False
                 else:
                     user_info = user_info_resp.json()
                     st.session_state.access_token = access_token
                     st.session_state.refresh_token = refresh_token
-                    st.session_state.auth_user = {"email": user_info["email"], "name": user_info["name"]}
-
-                    # Clear query params to prevent code reuse
+                    st.session_state.auth_user = {"email": user_info.get("email"), "name": user_info.get("name")}
+                    # clear query params to avoid accidental reuse
                     st.experimental_set_query_params()
                     st.session_state.chat_history = load_chat_history(st.session_state.auth_user["email"])
-                    st.experimental_rerun()
+                    st.rerun()
 
-    except requests.exceptions.RequestException as req_e:
-        st.error(f"Network error during OAuth: {req_e}")
+    except requests.exceptions.RequestException as e:
+        st.error(f"Network error during OAuth: {e}")
+        st.session_state.auth_code_exchanged = False
     except Exception as e:
-        st.error(f"Unexpected error during OAuth: {e}")
+        st.error(f"Unexpected OAuth error: {e}")
+        st.session_state.auth_code_exchanged = False
 
-# Sidebar login/logout
+elif code_list and state_list and state_list[0] != st.session_state.oauth_state:
+    # state mismatch — likely a session / cross-tab problem
+    st.error("State mismatch detected. Please click Sign in again (use the same tab).")
+
+# Sidebar UI: same-tab link (no target="_blank")
 with st.sidebar:
     if st.session_state.auth_user:
         st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
@@ -168,12 +192,12 @@ with st.sidebar:
             st.session_state.refresh_token = None
             st.session_state.chat_history = []
             st.session_state.auth_code_exchanged = False
-            st.experimental_rerun()
+            st.session_state.oauth_state = None
+            st.rerun()
     else:
         st.markdown("🔐 **Sign in with Google**")
-        # Open in same tab, not new tab
+        # IMPORTANT: open in same tab (no target attribute)
         st.markdown(f'<a href="{google_auth_url}">👉 Sign in with Google</a>', unsafe_allow_html=True)
-
 # ================== UI HELPERS ==================
 def type_like_chatgpt(text, speed=0.004):
     placeholder = st.empty()
