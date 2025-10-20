@@ -1,321 +1,130 @@
-# app.py
-import streamlit as st
-import time
+import os
 import json
 import requests
-from pathlib import Path
-import traceback
-import os
+import streamlit as st
+from typing import List, Dict
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+import time
 
-# -----------------------------------------------------------
-# Optional / heavy deps (guarded)
-# -----------------------------------------------------------
-HAVE_FIREBASE = False
-HAVE_FAISS = False
-HAVE_LANGCHAIN = False
+# ================== CONFIG ==================
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
+MODEL_NAME = os.getenv("MODEL_NAME") or"deepseek/deepseek-chat-v3.1:free"
+EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
+K_VAL = int(os.getenv("K_VAL") or 4)
 
-try:
-    import firebase_admin
-    from firebase_admin import credentials, db
-    HAVE_FIREBASE = True
-except Exception:
-    HAVE_FIREBASE = False
+# Hugging Face URLs for the prebuilt vector store (swap with Chem Eng dataset)
+FAISS_INDEX_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.faiss"
+FAISS_PKL_URL = "https://huggingface.co/datasets/prakhar146/medical/resolve/main/index.pkl"
 
-# Try to import langchain community modules only if available
-try:
-    from langchain_community.vectorstores import FAISS
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    HAVE_FAISS = True
-    HAVE_LANGCHAIN = True
-except Exception:
-    HAVE_FAISS = False
-    HAVE_LANGCHAIN = False
+# Local directory to store downloaded files
+LOCAL_FAISS_DIR = "./faiss_store"
+os.makedirs(LOCAL_FAISS_DIR, exist_ok=True)
 
-# -----------------------------------------------------------
-# PAGE CONFIG
-# -----------------------------------------------------------
-st.set_page_config(page_title="⚗ ChemEng Buddy", layout="wide")
+# ================== STREAMLIT PAGE SETUP ==================
+st.set_page_config(page_title="ChemEng Buddy", layout="wide")
+st.title("⚗️ ChemEng Buddy")
+st.markdown("Your friendly Chemical Engineering study partner")
 
-# -----------------------------------------------------------
-# SECRETS AND GLOBAL SETTINGS
-# -----------------------------------------------------------
-OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "") if st.secrets else ""
-FIREBASE_DATABASE_URL = (st.secrets.get("firebase", {}) or {}).get("databaseURL", "") if st.secrets else ""
-EMBED_MODEL = st.secrets.get("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2") if st.secrets else "sentence-transformers/all-MiniLM-L6-v2"
+def type_like_chatgpt(text, speed=0.004):
+    placeholder = st.empty()
+    animated = ""
+    for c in text:
+        animated += c
+        placeholder.markdown(animated + "|")
+        time.sleep(speed)
+    placeholder.markdown(animated)
 
-HEADERS = {
-    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    "Content-Type": "application/json"
-}
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# ================== HELPER: Download Files ==================
+def download_file(url: str, local_path: str):
+    if not os.path.exists(local_path):
+        r = requests.get(url)
+        r.raise_for_status()
+        with open(local_path, "wb") as f:
+            f.write(r.content)
 
-LLM_MODELS = [
-    "deepseek/deepseek-chat-v3.1:free",
-    "mistralai/mistral-small-3.2-24b-instruct:free",
-    "qwen/qwen3-4b:free"
-]
+# Download FAISS index files
+download_file(FAISS_INDEX_URL, os.path.join(LOCAL_FAISS_DIR, "index.faiss"))
+download_file(FAISS_PKL_URL, os.path.join(LOCAL_FAISS_DIR, "index.pkl"))
 
-# -----------------------------------------------------------
-# SIMPLE LOCAL CHAT BACKUP (if Firebase not available)
-# -----------------------------------------------------------
-LOCAL_STORE = Path.home() / ".chemeng_buddy_chats.json"
-if not LOCAL_STORE.exists():
-    try:
-        LOCAL_STORE.write_text(json.dumps({}))
-    except Exception:
-        pass
-
-# -----------------------------------------------------------
-# FIREBASE SETUP (optional)
-# -----------------------------------------------------------
-def init_firebase():
-    if not HAVE_FIREBASE:
-        return False, "firebase package not installed"
-    if not FIREBASE_DATABASE_URL:
-        return False, "no databaseURL in secrets"
-    try:
-        if not firebase_admin._apps:
-            svc_json = (st.secrets.get("SERVICE_ACCOUNT", {}) or {}).get("key", "")
-            if not svc_json:
-                return False, "no SERVICE_ACCOUNT key in secrets"
-            svc_dict = json.loads(svc_json)
-            # Fix newline escapes in private key
-            if "private_key" in svc_dict:
-                svc_dict["private_key"] = svc_dict["private_key"].replace("\\n", "\n")
-            cred = credentials.Certificate(svc_dict)
-            firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
-        return True, "initialized"
-    except Exception as e:
-        return False, f"Firebase init failed: {e}"
-
-_FIRE_INIT, FIRE_INIT_MSG = init_firebase()
-
-def encode_email(email):
-    return email.replace(".", "dot").replace("@", "at")
-
-def save_message_firebase(email, role, content):
-    try:
-        ref = db.reference(f"users/{encode_email(email)}/chats")
-        ref.push({"role": role, "content": content, "timestamp": int(time.time())})
-    except Exception:
-        # don't raise; fallback to local
-        raise
-
-def load_messages_firebase(email):
-    try:
-        ref = db.reference(f"users/{encode_email(email)}/chats")
-        data = ref.get()
-        if not data:
-            return []
-        return sorted(list(data.values()), key=lambda x: x.get("timestamp", 0))
-    except Exception:
-        raise
-
-def save_message_local(email, role, content):
-    try:
-        data = json.loads(LOCAL_STORE.read_text() or "{}")
-        key = encode_email(email)
-        data.setdefault(key, []).append({"role": role, "content": content, "timestamp": int(time.time())})
-        LOCAL_STORE.write_text(json.dumps(data))
-    except Exception:
-        pass
-
-def load_messages_local(email):
-    try:
-        data = json.loads(LOCAL_STORE.read_text() or "{}")
-        return sorted(data.get(encode_email(email), []), key=lambda x: x.get("timestamp", 0))
-    except Exception:
-        return []
-
-def save_message(email, role, content):
-    if _FIRE_INIT:
-        try:
-            save_message_firebase(email, role, content)
-            return
-        except Exception:
-            # fallback to local
-            save_message_local(email, role, content)
-    else:
-        save_message_local(email, role, content)
-
-def load_messages(email):
-    if _FIRE_INIT:
-        try:
-            return load_messages_firebase(email)
-        except Exception:
-            return load_messages_local(email)
-    else:
-        return load_messages_local(email)
-
-# -----------------------------------------------------------
-# FAISS / Retriever (optional)
-# -----------------------------------------------------------
-@st.cache_resource(show_spinner=False)
-def load_retriever():
-    if not HAVE_FAISS or not HAVE_LANGCHAIN:
-        return None, "faiss/langchain not installed"
-    try:
-        path = Path("./faiss_store")
-        if not path.exists():
-            return None, "faiss_store path not found"
-        embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
-        vectordb = FAISS.load_local(str(path), embedder, allow_dangerous_deserialization=True)
-        retriever = vectordb.as_retriever(search_type="similarity", k=4)
-        return retriever, "loaded"
-    except Exception as e:
-        return None, f"Could not load vector DB: {e}"
-
-retriever, RETRIEVER_MSG = load_retriever()
-
-# -----------------------------------------------------------
-# HELPER FUNCTIONS
-# -----------------------------------------------------------
-def query_openrouter(messages):
-    # Try multiple models (best-effort). Return a text message or error info.
-    for model in LLM_MODELS:
-        try:
-            payload = {"model": model, "messages": messages}
-            resp = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=30)
-            data = resp.json()
-            # Defensive parsing
-            if isinstance(data, dict) and "choices" in data and len(data["choices"]) > 0:
-                msg = data["choices"][0].get("message", {}).get("content") or data["choices"][0].get("text")
-                if msg:
-                    return msg
-        except Exception:
-            continue
-    return "⚠️ No response from any model (or OpenRouter key missing/failed)."
-
-def make_prompt(question):
-    docs = []
-    if retriever:
-        try:
-            docs = retriever.get_relevant_documents(question)
-        except Exception:
-            docs = []
-    context = "\n".join([d.page_content for d in docs]) if docs else "No context found."
-    system = "You are ChemEng Buddy, a helpful Chemical Engineering tutor. Explain clearly and simply."
-    user = f"Context:\n{context}\n\nQuestion: {question}"
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-# -----------------------------------------------------------
-# STATE INITIALIZATION
-# -----------------------------------------------------------
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-
-# -----------------------------------------------------------
-# UI - LOGIN
-# -----------------------------------------------------------
-def login_page():
-    st.markdown(
-        """
-        <style>
-        .center-box {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 80vh;
-            text-align: center;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
+# ================== VECTOR DB LOADING ==================
+@st.cache_resource
+def load_vector_db():
+    embedder = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    vectordb = FAISS.load_local(
+        LOCAL_FAISS_DIR,
+        embedder,
+        allow_dangerous_deserialization=True  # ⚠️ only for trusted .pkl file
     )
-    st.markdown("<div class='center-box'>", unsafe_allow_html=True)
-    st.title("⚗ ChemEng Buddy")
-    st.subheader("Your friendly Chemical Engineering Study Partner")
-    st.markdown("Please sign in to continue 👇")
+    return vectordb.as_retriever(search_type="similarity", k=K_VAL)
 
-    with st.form("login_form", clear_on_submit=False):
-        name = st.text_input("Full Name")
-        email = st.text_input("Email Address")
-        submitted = st.form_submit_button("Sign In 🔐")
-        if submitted:
-            if name.strip() == "" or email.strip() == "":
-                st.warning("Please fill in all fields.")
-            else:
-                st.session_state.user = {"name": name.strip(), "email": email.strip().lower()}
-                st.session_state.chat = load_messages(email.strip().lower())
-                st.experimental_rerun()
+retriever = load_vector_db()
 
-    st.markdown("</div>", unsafe_allow_html=True)
+# ================== OPENROUTER HELPER ==================
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
-# -----------------------------------------------------------
-# UI - CHAT
-# -----------------------------------------------------------
-def chat_page():
-    user = st.session_state.user
-    # Sidebar with status
-    st.sidebar.header(f"👋 Hello, {user['name']}")
-    if st.sidebar.button("Logout 🚪"):
-        st.session_state.user = None
-        st.session_state.chat = []
-        st.experimental_rerun()
+def query_openrouter(model: str, messages: List[Dict[str, str]]) -> str:
+    payload = {"model": model, "messages": messages}
+    r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if "choices" in data and data["choices"]:
+        return data["choices"][0]["message"]["content"]
+    return json.dumps(data)
 
-    st.sidebar.markdown("### System status")
-    st.sidebar.text(f"Firebase: {'enabled' if _FIRE_INIT else 'disabled'} ({FIRE_INIT_MSG})")
-    st.sidebar.text(f"Vector DB: {'loaded' if retriever else 'not loaded'} ({RETRIEVER_MSG})")
-    st.sidebar.text(f"OpenRouter key: {'present' if OPENROUTER_API_KEY else 'missing'}")
-
-    st.title("💬 ChemEng Buddy Chat")
-
-    # Display chat messages
-    for msg in st.session_state.chat:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        try:
-            with st.chat_message(role):
-                st.markdown(content)
-        except Exception:
-            # fallback to simple write
-            st.write(f"{role.upper()}: {content}")
-
-    # Chat input - try to use st.chat_input if available, otherwise fallback
-    user_input = None
-    if hasattr(st, "chat_input"):
-        user_input = st.chat_input("Ask something about Chemical Engineering ⚗️")
-    else:
-        # Fallback entry with button
-        with st.form("ask_form", clear_on_submit=True):
-            user_input = st.text_input("Ask something about Chemical Engineering ⚗️")
-            send = st.form_submit_button("Send")
-            if not send:
-                user_input = None
-
-    if user_input:
-        st.session_state.chat.append({"role": "user", "content": user_input})
-        save_message(user["email"], "user", user_input)
-
-        with st.spinner("Thinking..."):
-            try:
-                messages = make_prompt(user_input)
-                answer = query_openrouter(messages)
-            except Exception as e:
-                answer = f"⚠️ Error when calling model: {e}\n\nTrace:\n{traceback.format_exc()}"
-
-        st.session_state.chat.append({"role": "assistant", "content": answer})
-        save_message(user["email"], "assistant", answer)
-        # Instead of st.rerun (which can be jarring), just update the page
-        st.experimental_rerun()
-
-# -----------------------------------------------------------
-# MAIN (wrapped to catch unexpected errors)
-# -----------------------------------------------------------
-def main():
+# ================== VANILLA RAG PIPELINE ==================
+def vanilla_rag_answer(question: str) -> str:
     try:
-        if st.session_state.user:
-            chat_page()
-        else:
-            login_page()
-    except Exception as e:
-        st.error("An unexpected error occurred — details below.")
-        st.exception(e)
-        st.write("Traceback (for debugging):")
-        st.text(traceback.format_exc())
+        docs = retriever.get_relevant_documents(question)
+        context = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant context found."
+        
+        prompt = [
+            {"role": "system", "content": (
+                "You are ChemEng Buddy, a helpful tutor for chemical engineering. "
+                "Explain concepts clearly, step by step, with examples and common mistakes. "
+                "Stay focused only on chemical engineering topics."
+            )},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
+        ]
 
-if __name__ == "__main__":
-    main()
+        return query_openrouter(MODEL_NAME, prompt)
+
+    except Exception as e:
+        return f"⚠️ Error: {str(e)}"
+
+# ================== CHAT INTERFACE ==================
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "last_answer_animated" not in st.session_state:
+    st.session_state.last_answer_animated = False
+
+if user_query := st.chat_input("Ask me about Chemical Engineering"):
+    st.session_state.chat_history.append({"role": "user", "content": user_query})
+
+    with st.spinner("Thinking..."):
+        answer = vanilla_rag_answer(user_query)
+    
+    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    st.session_state.last_answer_animated = True
+    st.rerun()
+
+# Show chat history
+for i, chat in enumerate(st.session_state.chat_history):
+    with st.chat_message("user" if chat["role"] == "user" else "assistant"):
+        if (
+            i == len(st.session_state.chat_history) - 1
+            and chat["role"] == "assistant"
+            and st.session_state.last_answer_animated
+        ):
+            type_like_chatgpt(chat["content"])
+            st.session_state.last_answer_animated = False
+        else:
+            st.markdown(chat["content"])
+
+st.markdown("""<hr style="margin-top: 40px;">
+<div style='text-align: center; color: #888; font-size: 14px;'>
+    Built with ❤️ by <b>Prakhar Mathur</b> · BITS Pilani · 
+    <br>📬 Email: <a href="mailto:prakhar.mathur2020@gmail.com">prakhar.mathur2020@gmail.com</a>
+</div>
+""", unsafe_allow_html=True)
