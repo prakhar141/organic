@@ -4,12 +4,10 @@ import time
 import json
 import requests
 import streamlit as st
-import secrets as pysecrets
-import urllib.parse
 from typing import List, Dict
 from pathlib import Path
 
-# LangChain / FAISS imports (same as you used)
+# LangChain / FAISS imports
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -41,16 +39,10 @@ LOCAL_FAISS_DIR.mkdir(parents=True, exist_ok=True)
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
 
-# OAuth / Google credentials from secrets
-CLIENT_ID = st.secrets.get("GOOGLE_ID", "")
-CLIENT_SECRET = st.secrets.get("GOOGLE_KEY", "")
-REDIRECT_URI = st.secrets.get("redirect_url", "")  # must be registered in Google Cloud Console
-
-# Firebase service account (stored in st.secrets as JSON string under SERVICE_ACCOUNT.key)
+# Firebase service account
 FIREBASE_DATABASE_URL = st.secrets.get("firebase", {}).get("databaseURL", "")
 
 # ================== UTILITIES ==================
-
 def encode_email(email: str) -> str:
     """Encode email to safe Firebase key."""
     return email.replace(".", "dot").replace("@", "at")
@@ -80,10 +72,10 @@ def init_firebase():
         st.error(f"⚠ Firebase init failed: {e}")
         return False
 
-_FIRED_INITIALIZED = init_firebase()
+_FIRE_INITIALIZED = init_firebase()
 
 def load_chat_history_from_firebase(email: str) -> List[Dict]:
-    if not _FIRED_INITIALIZED:
+    if not _FIRE_INITIALIZED:
         return []
     try:
         ref = db.reference(f"users/{encode_email(email)}/chats")
@@ -98,7 +90,7 @@ def load_chat_history_from_firebase(email: str) -> List[Dict]:
         return []
 
 def save_chat_message_to_firebase(email: str, role: str, content: str):
-    if not _FIRED_INITIALIZED:
+    if not _FIRE_INITIALIZED:
         st.warning("Firebase not initialized; skipping save.")
         return
     try:
@@ -107,123 +99,43 @@ def save_chat_message_to_firebase(email: str, role: str, content: str):
     except Exception as e:
         st.warning(f"⚠ Failed to save message: {e}")
 
-# ================== OAUTH (Google same-tab) ==================
-
-# Setup session defaults
+# ================== SESSION STATE SETUP ==================
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
-if "refresh_token" not in st.session_state:
-    st.session_state.refresh_token = None
-if "oauth_state" not in st.session_state or st.session_state.oauth_state is None:
-    st.session_state.oauth_state = pysecrets.token_urlsafe(16)
-if "auth_code_exchanged" not in st.session_state:
-    st.session_state.auth_code_exchanged = False
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_answer_animated" not in st.session_state:
     st.session_state.last_answer_animated = False
 
-def google_auth_url():
-    params = {
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
-        "response_type": "code",
-        "scope": "openid email profile",
-        "access_type": "offline",
-        "prompt": "consent",
-        "state": st.session_state.oauth_state
-    }
-    return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
-
-def exchange_code_for_tokens(code: str) -> Dict:
-    payload = {
-        "code": code,
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "redirect_uri": REDIRECT_URI,
-        "grant_type": "authorization_code"
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    resp = requests.post("https://oauth2.googleapis.com/token", data=urllib.parse.urlencode(payload), headers=headers, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
-
-# When the app loads, check query params for OAuth `code`
-query_code = st.experimental_get_query_params().get("code")
-query_state = st.experimental_get_query_params().get("state")
-query_error = st.experimental_get_query_params().get("error")
-
-if query_error:
-    st.error(f"Google OAuth returned error: {query_error}")
-
-# Only attempt to exchange once per code and when state matches
-if query_code and query_state and (query_state[0] == st.session_state.oauth_state) and (not st.session_state.auth_user) and (not st.session_state.auth_code_exchanged):
-    st.session_state.auth_code_exchanged = True
-    code = query_code[0]
-    try:
-        tokens = exchange_code_for_tokens(code)
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
-        if not access_token:
-            st.error("No access token returned from Google.")
-            st.session_state.auth_code_exchanged = False
-        else:
-            # fetch userinfo
-            user_info_resp = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
-            user_info_resp.raise_for_status()
-            user_info = user_info_resp.json()
-            st.session_state.access_token = access_token
-            st.session_state.refresh_token = refresh_token
-            st.session_state.auth_user = {"email": user_info.get("email"), "name": user_info.get("name")}
-            # load chat history from firebase
-            if st.session_state.auth_user and st.session_state.auth_user.get("email"):
-                st.session_state.chat_history = load_chat_history_from_firebase(st.session_state.auth_user["email"])
-            # clear query params to avoid reusing code
-            st.experimental_set_query_params()
-            # we can rerun to show logged-in UI
-            st.experimental_rerun()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Network error during OAuth token exchange: {e}")
-        st.session_state.auth_code_exchanged = False
-    except Exception as e:
-        st.error(f"Unexpected error in OAuth: {e}")
-        st.session_state.auth_code_exchanged = False
-elif query_code and query_state and query_state[0] != st.session_state.oauth_state:
-    # state mismatch — warn the user
-    st.error("State mismatch detected. Please click Sign in again in the same tab.")
-    if st.button("Restart sign-in (reset state)"):
-        st.session_state.oauth_state = pysecrets.token_urlsafe(16)
-        st.session_state.auth_code_exchanged = False
-        st.experimental_rerun()
-
-# ================== SIDEBAR (login/logout) ==================
+# ================== SIDEBAR LOGIN ==================
 with st.sidebar:
     st.header("Account")
     if st.session_state.auth_user:
-        st.success(f"✅ Logged in as {st.session_state.auth_user['email']}")
+        st.success(f"✅ Logged in as {st.session_state.auth_user['name']} ({st.session_state.auth_user['email']})")
         if st.button("Logout"):
             st.session_state.auth_user = None
-            st.session_state.access_token = None
-            st.session_state.refresh_token = None
             st.session_state.chat_history = []
-            st.session_state.auth_code_exchanged = False
-            st.session_state.oauth_state = pysecrets.token_urlsafe(16)
             st.experimental_rerun()
     else:
-        st.markdown("🔐 Sign in with Google")
-        url = google_auth_url()
-        st.markdown(
-            f'<a href="{url}" target="_self">👉 Sign in with Google (same tab)</a>\n\n⚠️ Please do not open in a new tab or reload the page during sign-in.',
-            unsafe_allow_html=True,
-        )
+        st.markdown("🔐 **Login to ChemEng Buddy**")
+        with st.form("login_form", clear_on_submit=False):
+            full_name = st.text_input("Full Name")
+            email = st.text_input("Email")
+            submitted = st.form_submit_button("Login")
+            if submitted:
+                if not full_name or not email:
+                    st.warning("Please enter both name and email.")
+                else:
+                    st.session_state.auth_user = {"name": full_name.strip(), "email": email.strip().lower()}
+                    st.session_state.chat_history = load_chat_history_from_firebase(email.strip().lower())
+                    st.success("Logged in successfully!")
+                    st.experimental_rerun()
 
 # ================== UI: Title + Description ==================
 st.title("⚗ ChemEng Buddy")
-st.markdown("Your friendly Chemical Engineering study partner. Log in with Google to load and save your chats to your account.")
+st.markdown("Your friendly Chemical Engineering study partner. Log in to save and view your chats.")
 
-# ================== ANIMATION HELPERS (non-blocking, simple) ==================
+# ================== ANIMATION HELPERS ==================
 def type_like_chatgpt(text: str, speed: float = 0.004):
     placeholder = st.empty()
     animated = ""
@@ -287,15 +199,12 @@ def query_openrouter(messages: List[Dict[str, str]]) -> str:
             resp.raise_for_status()
             data = resp.json()
             if "choices" in data and len(data["choices"]) > 0:
-                # Some OpenRouter responses nest content differently; handle leniently
                 choice = data["choices"][0]
-                # prefer message.content
                 if isinstance(choice.get("message"), dict):
                     return choice["message"].get("content", "")
                 else:
                     return choice.get("text", "")
         except Exception:
-            # Try next model silently
             continue
     return "⚠️ All LLMs failed to respond. Please try again later."
 
@@ -317,18 +226,17 @@ def build_prompt_with_context(user_question: str, chat_history: List[Dict]) -> L
     return [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
 
 # ================== MAIN CHAT UI ==================
-# Keep the main column for conversation
 main_col, right_col = st.columns([3, 1])
 
 with main_col:
-    # If logged in, show previous chats
     if st.session_state.auth_user:
-        st.subheader(f"Hello, {st.session_state.auth_user.get('name') or st.session_state.auth_user.get('email')} 👋")
+        st.subheader(f"Hello, {st.session_state.auth_user['name']} 👋")
         st.markdown("---")
-        # Render existing chat history from session_state
+
         if not st.session_state.chat_history:
             st.info("No previous chats found — start a new conversation below!")
-        for i, chat in enumerate(st.session_state.chat_history):
+
+        for chat in st.session_state.chat_history:
             role = chat.get("role", "user")
             content = chat.get("content", "")
             if role == "user":
@@ -338,32 +246,28 @@ with main_col:
                 with st.chat_message("assistant"):
                     st.markdown(content)
     else:
-        st.info("Please sign in with Google (sidebar) to load your saved chats and start chatting.")
+        st.info("Please log in (sidebar) to load your saved chats and start chatting.")
 
     st.markdown("---")
+
     # Chat input — only enabled when logged in
     if st.session_state.auth_user:
         user_query = st.chat_input("Ask me anything about Chemical Engineering ⚗")
         if user_query:
-            # update chat history immediately in UI & firebase
             st.session_state.chat_history.append({"role": "user", "content": user_query, "timestamp": now_ts()})
             save_chat_message_to_firebase(st.session_state.auth_user["email"], "user", user_query)
 
-            # Build prompt & query LLM
             with st.spinner("Thinking..."):
                 prompt = build_prompt_with_context(user_query, st.session_state.chat_history)
                 answer = query_openrouter(prompt)
 
-            # Save assistant message
             st.session_state.chat_history.append({"role": "assistant", "content": answer, "timestamp": now_ts()})
             save_chat_message_to_firebase(st.session_state.auth_user["email"], "assistant", answer)
-
-            # Rerun so messages render with chat_message components in order
             st.experimental_rerun()
     else:
-        st.write("Sign in to start chatting and have your chats saved to your account.")
+        st.write("Log in to start chatting and have your chats saved to your account.")
 
-# Right column: helper widgets
+# ================== RIGHT SIDEBAR ==================
 with right_col:
     st.header("Controls & Info")
     if retriever:
@@ -373,16 +277,15 @@ with right_col:
         st.warning("Retriever not available")
     st.write("Debug / quick actions:")
     if st.button("Reload vector DB"):
-        # clear cache by rerunning (force new cache by changing param unlikely)
         load_vector_db.clear()
         st.experimental_rerun()
-    if st.button("Refresh chat history from server (Firebase)"):
+    if st.button("Refresh chat history from server"):
         if st.session_state.auth_user and st.session_state.auth_user.get("email"):
             st.session_state.chat_history = load_chat_history_from_firebase(st.session_state.auth_user["email"])
             st.experimental_rerun()
         else:
-            st.warning("You must be signed in to refresh your chat history.")
+            st.warning("You must be logged in to refresh chat history.")
 
-# Footer / instructions
+# Footer
 st.markdown("---")
-st.markdown("**Notes:**\n- Keep your Streamlit `secrets` updated with required keys.\n- The Google OAuth redirect URL must match the one registered in your Google Cloud Console.\n- Firebase saves chats under `users/<encoded-email>/chats` in Realtime Database.")
+st.markdown("**Notes:**\n- Log in with your name and email to access and save your chat history.\n- Chats are stored under your email in Firebase.\n- No Google OAuth required.")
