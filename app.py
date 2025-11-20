@@ -9,7 +9,7 @@ import time
 
 # ================== CONFIG ==================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
-MODEL_NAME = os.getenv("MODEL_NAME") or"openai/gpt-oss-20b:free"
+MODEL_NAME = os.getenv("MODEL_NAME") or"mistralai/mistral-small-3.2-24b-instruct:free"
 EMBED_MODEL = os.getenv("EMBED_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
 K_VAL = int(os.getenv("K_VAL") or 4)
 
