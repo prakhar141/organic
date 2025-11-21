@@ -80,7 +80,7 @@ def smart_query_openrouter(messages: List[Dict[str, str]]) -> str:
             if r.status_code == 200:
                 data = r.json()
                 if "choices" in data and data["choices"]:
-                    return f"**Model Used:** `{model}`\n\n" + data["choices"][0]["message"]["content"]
+                    return data["choices"][0]["message"]["content"]
         except Exception:
             continue
 
