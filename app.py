@@ -12,7 +12,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "YOUR_API_KEY"
 
 # 5-model auto fallback
 MODEL_LIST = [
-    "mistralai/mistral-small-3.2-24b-instruct:free",
+    "deepseek/deepseek-r1-distill-llama-70b:free",
     "deepseek/deepseek-r1-0528:free",
     "google/gemma-3n-e4b-it:free",
     "openai/gpt-oss-20b:free",
